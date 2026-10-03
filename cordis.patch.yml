@@ -19,3 +19,9 @@
         includeDefaultRoots: false
         customSkillDirs:
           - !!js process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('dsh-vlog-jianying/package.json')), 'skills')
+
+    # vlog-studio host half: /api/vlog-studio/* Fetch routes (env check,
+    # fixture frame, jailed image reads, project session create/reuse).
+    # The client half declares itself via package.json dsh.client.
+    - id: vlog-studio
+      name: 'dsh-vlog-jianying'

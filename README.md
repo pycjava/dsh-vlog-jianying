@@ -59,10 +59,21 @@ dsh plugin --profile desktop remove dsh-vlog-jianying
 
 - `vlog-jianying-one-stop`:默认 9:16、约 100 秒竖屏 Vlog 的规划—拍摄—剪辑闭环。两种模式:先规划后拍(A),或已有素材直接剪(B)。配乐只使用本地曲库,不下载版权音乐。
 
+## 「视频剪辑」工作台(0.2.0 新增,阶段 1)
+
+侧栏「新会话」下方新增**视频剪辑**入口,打开独立页面。当前为关键连接验证版:
+
+- **环境检查**:页面一键调用宿主运行 `check-env.py`,显示 ffmpeg/ffprobe/可选依赖状态与工作区路径
+- **缩略图链路**:宿主生成测试帧并以 data URL 回传页面显示(验证 spawn + 本地图片通道)
+- **项目会话联动**:按项目名创建/复用专属会话并跳转(开场指令复制到剪贴板,确认后发送)
+
+宿主服务面最小化:仅 `/api/vlog-studio/*` 固定操作,所有路径监禁于工作区(默认 `~/VLOG剪辑工作区`,可用 `DSH_VLOG_WORKSPACE` 覆盖),脚本只从技能目录执行。后续阶段(项目列表、素材预览墙、任务管理)将逐步叠加。
+
 ## 测试
 
 ```sh
-python3 skills/vlog-jianying-one-stop/tests/smoke_test.py
+python3 skills/vlog-jianying-one-stop/tests/smoke_test.py   # 技能脚本(17 项)
+node test/host-smoke.mjs                                    # 工作台宿主+客户端(15 项)
 ```
 
 纯标准库测试(参数校验、覆盖保护、降级路径)始终执行;装了 ffmpeg 时自动追加端到端用例(合成素材 → 盘点 → 时间线 → 抽帧 → 混音 → 校验)。
