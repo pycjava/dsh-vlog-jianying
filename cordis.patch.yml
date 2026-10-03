@@ -1,0 +1,21 @@
+# dsh-vlog-jianying bundle layer.
+#
+# Mounts a second instance of the built-in filesystem skill provider, pointed at
+# this package's skills/ directory as a *custom* root. Reusing the official
+# provider keeps this package free of plugin code: there is no provider
+# implementation here to keep in step with dsh's API.
+#
+# Rank rationale (constants in @deepseek-ai/dsh-skill-filesystem): project roots
+# are 100/200, custom roots 300, user roots 400/500, bundled roots 600. A custom
+# root places this pack above every user-level directory (~/.dsh/skills 400,
+# ~/.agents/skills 500) and below project-level overrides (100/200). Skill names
+# in this pack do not overlap with other packs, so rank ties are impossible in
+# practice.
+- insert:
+    - id: vlog-jianying-skills-filesystem
+      name: '@deepseek-ai/dsh-skill-filesystem'
+      config:
+        providerName: vlog-jianying-skills
+        includeDefaultRoots: false
+        customSkillDirs:
+          - !!js process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('dsh-vlog-jianying/package.json')), 'skills')
