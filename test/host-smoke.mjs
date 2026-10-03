@@ -88,6 +88,9 @@ check('session route absent without sessionController', !routes.has('/api/vlog-s
   const fakeReact = {
     createElement: (...args) => ({ __element: args }),
     useState: (v) => [v, () => {}],
+    useEffect: () => {},
+    useRef: (v) => ({ current: v }),
+    useCallback: (fn) => fn,
   }
   await import('../lib/client.js')
   check('client bundle registers factory id', loaded?.id === 'dsh-vlog-jianying')
@@ -111,7 +114,7 @@ check('session route absent without sessionController', !routes.has('/api/vlog-s
   const navEntry = registered.find((r) => r.slot === 'sidebar.panellist')
   check('registers main page keyed vlog-studio', mainEntry?.registration?.options?.key === 'vlog-studio')
   check('registers sidebar entry panel label order 20', navEntry?.registration?.options?.order === 20 && navEntry?.registration?.options?.id === 'vlog-studio' && navEntry?.registration?.options?.label() === 'panel')
-  check('page component renders without throwing', typeof mainEntry?.registration?.component === 'function' && Boolean(mainEntry.registration.component({ t: (k) => k, api: async () => ({ ok: true, value: {} }), openSession: () => {} })))
+  check('page component renders without throwing', typeof mainEntry?.registration?.component === 'function' && Boolean(mainEntry.registration.component({ t: (k) => k, api: async () => ({ ok: true, value: { projects: [] } }), openSession: () => {}, clipboard: async () => {} })))
 }
 
 rmSync(workspace, { recursive: true, force: true })

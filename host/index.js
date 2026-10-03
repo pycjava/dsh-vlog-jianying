@@ -28,7 +28,9 @@ const SCRIPTS_DIR = resolve(PLUGIN_DIR, '..', 'skills', 'vlog-jianying-one-stop'
 const WORKSPACE_ROOT = resolve(process.env.DSH_VLOG_WORKSPACE || join(homedir(), 'VLOG剪辑工作区'))
 
 const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp'])
+const TEXT_EXTENSIONS = new Set(['.csv', '.json', '.md', '.srt', '.txt'])
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024
+const MAX_TEXT_BYTES = 2 * 1024 * 1024
 const MIME_BY_EXT = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' }
 
 function badRequest(message) {
@@ -171,6 +173,30 @@ export function apply(ctx) {
       }
       if (data.length > MAX_IMAGE_BYTES) return badRequest('图片超过 5MB 限制')
       return { ok: true, value: { dataUrl: `data:${MIME_BY_EXT[ext]};base64,${data.toString('base64')}`, bytes: data.length } }
+    },
+
+    /** Read one small text/data file inside the project dir (CSV/JSON/MD/SRT). */
+    '/api/vlog-studio/read-text': async (payload) => {
+      const name = safeProjectName(payload?.project)
+      if (!name) return badRequest('项目名无效')
+      const project = await projectStore.get(name)
+      if (!project) return badRequest(`项目不存在: ${name}`)
+      let path
+      try {
+        path = jail(payload?.path, project.dir)
+      } catch (error) {
+        return badRequest(error.message)
+      }
+      const ext = extname(path).toLowerCase()
+      if (!TEXT_EXTENSIONS.has(ext)) return badRequest(`不允许的文件类型: ${ext}`)
+      let text
+      try {
+        text = await readFile(path, 'utf8')
+      } catch {
+        return badRequest('文件不存在或不可读')
+      }
+      if (text.length > MAX_TEXT_BYTES) return badRequest('文件超过 2MB 限制')
+      return { ok: true, value: { text, bytes: text.length } }
     },
 
     // ---- Phase 2: projects + tasks ----
