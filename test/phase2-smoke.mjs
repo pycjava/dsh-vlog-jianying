@@ -4,7 +4,7 @@
  * ffmpeg when available. Usage: node test/phase2-smoke.mjs
  */
 
-import { mkdtempSync, rmSync, mkdirSync, existsSync } from 'node:fs'
+import { mkdtempSync, rmSync, mkdirSync, existsSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -114,6 +114,63 @@ if (ffmpegOk) {
   check('write op allowed after previous settles', t3.ok === true)
   const t3done = await waitTask(t3.value.task.id)
   check('timeline task succeeded', t3done.state === 'succeeded', t3done.stderrTail)
+
+  // --- phase 3: music-index / mix / verify / files.list / open-folder jail ---
+  mkdirSync(join(workspace, 'projects', '测试项目 A', '99_临时'), { recursive: true })
+  mkdirSync(join(workspace, 'projects', '测试项目 A', '05_音乐音效', 'library'), { recursive: true })
+  const masterPath = join(workspace, 'projects', '测试项目 A', '99_临时', '测试项目 A_无BGM母版_v1.mp4')
+  const bgmPath = join(workspace, 'projects', '测试项目 A', '05_音乐音效', 'library', 'bgm.wav')
+  execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y',
+    '-f', 'lavfi', '-i', 'testsrc=duration=2:size=1080x1920:rate=30',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
+    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', masterPath], { stdio: 'pipe' })
+  execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y',
+    '-f', 'lavfi', '-i', 'sine=frequency=220:duration=6', bgmPath], { stdio: 'pipe' })
+
+  const mi = await call('/api/vlog-studio/tasks.start', { project: '测试项目 A', op: 'music-index' })
+  check('music-index accepted', mi.ok === true)
+  check('music-index succeeded', (await waitTask(mi.value.task.id)).state === 'succeeded')
+  check('music-index.csv written', existsSync(join(workspace, 'projects', '测试项目 A', '05_音乐音效', 'music-index.csv')))
+
+  const mix = await call('/api/vlog-studio/tasks.start', {
+    project: '测试项目 A', op: 'mix', params: { master: masterPath, bgm: bgmPath, startSeconds: 0 },
+  })
+  check('mix accepted', mix.ok === true, JSON.stringify(mix).slice(0, 200))
+  const mixDone = await waitTask(mix.value.task.id)
+  check('mix succeeded', mixDone.state === 'succeeded', mixDone.stderrTail)
+  check('mix output path noted', typeof mixDone.note === 'string' && mixDone.note.includes('07_交付'))
+  check('mix output exists', existsSync(mixDone.note))
+
+  const mixBad = await call('/api/vlog-studio/tasks.start', {
+    project: '测试项目 A', op: 'mix', params: { master: masterPath, bgm: '/etc/passwd' },
+  })
+  check('mix rejects ungranted bgm', mixBad.ok === false)
+
+  const verify = await call('/api/vlog-studio/tasks.start', {
+    project: '测试项目 A', op: 'verify',
+    params: { file: mixDone.note, width: 1080, height: 1920, fps: 30 },
+  })
+  check('verify accepted', verify.ok === true)
+  check('verify succeeded', (await waitTask(verify.value.task.id)).state === 'succeeded')
+
+  const verifyOutside = await call('/api/vlog-studio/tasks.start', {
+    project: '测试项目 A', op: 'verify', params: { file: '/etc/hosts' },
+  })
+  check('verify rejects file outside project', verifyOutside.ok === false)
+
+  const fl = await call('/api/vlog-studio/files.list', { project: '测试项目 A', subdir: '07_交付' })
+  check('files.list returns delivery mp4', fl.ok === true && fl.value.files.some((f) => f.name.endsWith('.mp4')))
+  const flBad = await call('/api/vlog-studio/files.list', { project: '测试项目 A', subdir: '..' })
+  check('files.list rejects subdir escape', flBad.ok === false)
+  const ofBad = await call('/api/vlog-studio/open-folder', { project: '测试项目 A', subdir: '../../..' })
+  check('open-folder rejects subdir escape', ofBad.ok === false)
+
+  const rt = await call('/api/vlog-studio/read-text', {
+    project: '测试项目 A', path: join(workspace, 'projects', '测试项目 A', '05_音乐音效', 'music-index.csv'),
+  })
+  check('read-text reads CSV inside project', rt.ok === true && rt.value.text.includes('analysis_status'))
+  const rtBad = await call('/api/vlog-studio/read-text', { project: '测试项目 A', path: '/etc/hosts' })
+  check('read-text rejects outside path', rtBad.ok === false)
 
   // task list is journaled (survives "refresh")
   const listed = await call('/api/vlog-studio/tasks.list', { project: '测试项目 A' })

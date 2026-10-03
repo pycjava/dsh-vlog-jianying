@@ -14,7 +14,7 @@
 
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, readFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -246,6 +246,59 @@ export function apply(ctx) {
       ok: true,
       value: { ops: Object.keys(OPS) },
     }),
+
+    /** List media files inside one project subdirectory (jailed). */
+    '/api/vlog-studio/files.list': async (payload) => {
+      const name = safeProjectName(payload?.project)
+      if (!name) return badRequest('项目名无效')
+      const project = await projectStore.get(name)
+      if (!project) return badRequest(`项目不存在: ${name}`)
+      let dir
+      try {
+        dir = jail(join(project.dir, String(payload?.subdir || '.')), project.dir)
+      } catch (error) {
+        return badRequest(error.message)
+      }
+      let entries
+      try {
+        entries = await readdir(dir)
+      } catch {
+        return { ok: true, value: { dir, files: [] } }
+      }
+      const files = []
+      for (const entry of entries) {
+        const full = join(dir, entry)
+        try {
+          const info = await stat(full)
+          if (!info.isFile()) continue
+          files.push({ name: entry, path: full, size: info.size, mtime: info.mtime.toISOString() })
+        } catch { /* skip unreadable entries */ }
+      }
+      files.sort((a, b) => String(b.mtime).localeCompare(String(a.mtime)))
+      return { ok: true, value: { dir, files } }
+    },
+
+    /** Open a project subdirectory in the system file manager (jailed). */
+    '/api/vlog-studio/open-folder': async (payload) => {
+      const name = safeProjectName(payload?.project)
+      if (!name) return badRequest('项目名无效')
+      const project = await projectStore.get(name)
+      if (!project) return badRequest(`项目不存在: ${name}`)
+      let dir
+      try {
+        dir = jail(join(project.dir, String(payload?.subdir || '.')), project.dir)
+      } catch (error) {
+        return badRequest(error.message)
+      }
+      if (!existsSync(dir)) await mkdir(dir, { recursive: true })
+      const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer.exe' : 'xdg-open'
+      await new Promise((resolvePromise, rejectPromise) => {
+        const child = spawn(opener, [dir], { stdio: 'ignore' })
+        child.on('error', rejectPromise)
+        child.on('close', (code) => (code === 0 ? resolvePromise() : rejectPromise(new Error(`${opener} exit ${code}`))))
+      })
+      return { ok: true, value: { opened: dir } }
+    },
   }
 
   // Fetch routes need the connection service; profiles without it (headless)

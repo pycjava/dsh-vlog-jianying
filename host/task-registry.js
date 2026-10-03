@@ -7,55 +7,107 @@
  *   - ops are a fixed table; clients pick an op and a project, never a path
  *     or argv;
  *   - output paths are computed server-side inside the project directory;
- *   - sourceDir params must be inside the project's granted source dirs;
+ *   - every media input path must sit inside the project dir or one of the
+ *     project's granted source dirs;
  *   - at most one write op per project at a time; at most MAX_RUNNING tasks
  *     overall;
- *   - every state change is journaled to <workspace>/tasks/<id>.json, so a
- *     page refresh re-reads truth; on plugin start, journaled "running"
- *     tasks become "interrupted" (the process died with the host).
+ *   - every state change is journaled to <workspace>/tasks/<id>.json; on
+ *     plugin start, journaled "running" tasks become "interrupted".
  */
 
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 
 const MAX_RUNNING = 2
 const TAIL_BYTES = 8192
 
-/** Fixed op table: script + server-computed argument mapping. */
-export const OPS = {
-  inventory: {
-    script: 'inventory-media.py',
-    kind: 'write',
-    timeoutMs: 600_000,
-    args: ({ sourceDir, projectDir }) => [
-      '--source-dir', sourceDir,
-      '--output-csv', join(projectDir, '01_项目资料', '00_素材盘点.csv'),
-    ],
-  },
-  timeline: {
-    script: 'build-real-timeline.py',
-    kind: 'write',
-    timeoutMs: 600_000,
-    args: ({ sourceDir, projectDir }) => [
-      '--source-dir', sourceDir,
-      '--output-csv', join(projectDir, '01_项目资料', '00b_事实时间线.csv'),
-    ],
-  },
-  frames: {
-    script: 'prepare-review-frames.py',
-    kind: 'write',
-    timeoutMs: 1_800_000,
-    args: ({ sourceDir, projectDir }) => [
-      '--source-dir', sourceDir,
-      '--output-dir', join(projectDir, '99_临时', '素材预览'),
-    ],
-  },
-}
-
 function tail(text, bytes = TAIL_BYTES) {
   return text.length > bytes ? text.slice(-bytes) : text
+}
+
+/** Path must sit inside root (equal or descendant). */
+function inside(path, root) {
+  const resolved = resolve(path)
+  return resolved === root || resolved.startsWith(root + sep)
+}
+
+/** Next non-existing versioned delivery path: <dir>/<base>_final_vN.mp4 */
+function nextVersionPath(dir, base) {
+  for (let n = 1; n < 100; n += 1) {
+    const candidate = join(dir, `${base}_final_v${n}.mp4`)
+    if (!existsSync(candidate)) return candidate
+  }
+  throw new Error('交付版本号耗尽（v99），请清理旧交付文件')
+}
+
+/**
+ * Fixed op table. Each op's prepare() validates params and returns argv for
+ * the script; it receives the project record plus a grant checker and never
+ * trusts client-supplied output paths.
+ */
+export const OPS = {
+  inventory: {
+    script: 'inventory-media.py', kind: 'write', timeoutMs: 600_000,
+    prepare: async ({ sourceDir, projectDir }) => ({
+      args: ['--source-dir', sourceDir, '--output-csv', join(projectDir, '01_项目资料', '00_素材盘点.csv')],
+    }),
+  },
+  timeline: {
+    script: 'build-real-timeline.py', kind: 'write', timeoutMs: 600_000,
+    prepare: async ({ sourceDir, projectDir }) => ({
+      args: ['--source-dir', sourceDir, '--output-csv', join(projectDir, '01_项目资料', '00b_事实时间线.csv')],
+    }),
+  },
+  frames: {
+    script: 'prepare-review-frames.py', kind: 'write', timeoutMs: 1_800_000,
+    prepare: async ({ sourceDir, projectDir }) => ({
+      args: ['--source-dir', sourceDir, '--output-dir', join(projectDir, '99_临时', '素材预览')],
+    }),
+  },
+  'music-index': {
+    script: 'build-music-index.py', kind: 'write', timeoutMs: 1_800_000,
+    prepare: async ({ projectDir, musicDir }) => ({
+      args: [musicDir || join(projectDir, '05_音乐音效', 'library'), '--output', join(projectDir, '05_音乐音效', 'music-index.csv')],
+    }),
+  },
+  mix: {
+    script: 'mix-bgm.py', kind: 'write', timeoutMs: 1_800_000,
+    prepare: async ({ projectDir, params, projectName }) => {
+      const master = resolve(String(params.master || ''))
+      if (!inside(master, projectDir)) throw new Error('母版必须位于项目目录内')
+      if (!existsSync(master)) throw new Error(`母版不存在: ${master}`)
+      const bgm = resolve(String(params.bgm || ''))
+      if (!existsSync(bgm)) throw new Error(`音乐文件不存在: ${bgm}`)
+      const startSeconds = Number(params.startSeconds || 0)
+      if (!Number.isFinite(startSeconds) || startSeconds < 0 || startSeconds > 86400) throw new Error('入点秒数无效')
+      const deliveryDir = join(projectDir, '07_交付')
+      await mkdir(deliveryDir, { recursive: true })
+      const output = nextVersionPath(deliveryDir, projectName)
+      const args = ['--video-path', master, '--bgm-path', bgm, '--output-path', output, '--start-seconds', String(startSeconds)]
+      const intervals = join(projectDir, '05_音乐音效', '声音区间.csv')
+      if (existsSync(intervals)) args.push('--sound-intervals-csv', intervals)
+      const index = join(projectDir, '05_音乐音效', 'music-index.csv')
+      if (existsSync(index)) args.push('--index-csv', index)
+      return { args, note: output }
+    },
+  },
+  verify: {
+    script: 'verify-export.py', kind: 'read', timeoutMs: 120_000,
+    prepare: async ({ projectDir, params }) => {
+      const file = resolve(String(params.file || ''))
+      if (!inside(file, projectDir)) throw new Error('待校验文件必须位于项目目录内')
+      const args = ['--video-path', file]
+      const numeric = { targetSeconds: '--target-seconds', width: '--expected-width', height: '--expected-height', fps: '--expected-fps' }
+      for (const [key, flag] of Object.entries(numeric)) {
+        const value = Number(params[key] || 0)
+        if (value > 0) args.push(flag, String(value))
+      }
+      return { args }
+    },
+  },
 }
 
 export function createTaskRegistry({ workspaceRoot, scriptsDir, projectStore, whichPython }) {
@@ -72,7 +124,6 @@ export function createTaskRegistry({ workspaceRoot, scriptsDir, projectStore, wh
     journal.set(record.id, record)
   }
 
-  /** Mark tasks that were running when the host last died. */
   async function recover() {
     let files = []
     try {
@@ -107,10 +158,23 @@ export function createTaskRegistry({ workspaceRoot, scriptsDir, projectStore, wh
     const record0 = await projectStore.get(project)
     if (!record0) throw new Error(`项目不存在: ${project}`)
 
-    const sourceDir = typeof params.sourceDir === 'string' && params.sourceDir ? params.sourceDir : record0.sourceDirs?.[0]
-    if (!sourceDir) throw new Error('该项目还没有授权的素材目录，请先选择素材目录')
-    if (!(await projectStore.isGrantedSource(project, sourceDir))) {
-      throw new Error(`素材目录未授权给项目 ${project}: ${sourceDir}`)
+    // Media input grant check: sourceDir-style params must be granted.
+    let sourceDir = typeof params.sourceDir === 'string' && params.sourceDir ? params.sourceDir : record0.sourceDirs?.[0]
+    if (['inventory', 'timeline', 'frames'].includes(op)) {
+      if (!sourceDir) throw new Error('该项目还没有授权的素材目录，请先选择素材目录')
+      if (!(await projectStore.isGrantedSource(project, sourceDir))) {
+        throw new Error(`素材目录未授权给项目 ${project}: ${sourceDir}`)
+      }
+    }
+    if (op === 'music-index' && params.musicDir) {
+      if (!(await projectStore.isGrantedSource(project, params.musicDir))) {
+        throw new Error(`音乐目录未授权给项目 ${project}: ${params.musicDir}`)
+      }
+    }
+    if (op === 'mix' && params.bgm) {
+      const bgm = resolve(String(params.bgm))
+      const granted = inside(bgm, record0.dir) || (await projectStore.isGrantedSource(project, bgm))
+      if (!granted) throw new Error(`音乐文件未授权：${bgm}（须位于项目目录或授权目录内）`)
     }
 
     const running = [...live.values()].filter((t) => t.state === 'running')
@@ -119,15 +183,16 @@ export function createTaskRegistry({ workspaceRoot, scriptsDir, projectStore, wh
       throw new Error(`项目 ${project} 有写入任务正在运行，为避免冲突请等其完成`)
     }
 
-    const projectDir = record0.dir
-    const args = spec.args({ sourceDir, projectDir })
-    const outputTarget = args[args.length - 1]
-    await mkdir(join(outputTarget, '..'), { recursive: true })
+    const prepared = await spec.prepare({
+      projectDir: record0.dir, projectName: record0.name, params, sourceDir,
+      musicDir: params.musicDir,
+    })
 
     const id = randomUUID().slice(0, 8)
     const record = {
       id, project, op, state: 'running',
-      argv: ['python3', join(scriptsDir, spec.script), ...args],
+      argv: ['python3', join(scriptsDir, spec.script), ...prepared.args],
+      note: prepared.note || null,
       startedAt: new Date().toISOString(), endedAt: null,
       exitCode: null, stdoutTail: '', stderrTail: '',
       proc: null,
@@ -144,8 +209,8 @@ export function createTaskRegistry({ workspaceRoot, scriptsDir, projectStore, wh
       return publicView(record)
     }
 
-    const child = spawn(python, [join(scriptsDir, spec.script), ...args], {
-      cwd: projectDir, stdio: ['ignore', 'pipe', 'pipe'],
+    const child = spawn(python, [join(scriptsDir, spec.script), ...prepared.args], {
+      cwd: record0.dir, stdio: ['ignore', 'pipe', 'pipe'],
     })
     record.proc = child
     const timer = setTimeout(() => {
@@ -159,6 +224,7 @@ export function createTaskRegistry({ workspaceRoot, scriptsDir, projectStore, wh
       record.state = 'failed'
       record.endedAt = new Date().toISOString()
       record.stderrTail = tail(`${record.stderrTail}\n${error.message}`)
+      live.delete(id)
       await persist(publicView(record))
     })
     child.on('close', async (code, signal) => {
