@@ -4,23 +4,22 @@
  * All browser calls arrive as Connection RPC envelopes over exact Fetch
  * routes under /api/vlog-studio/* (inside Connection's authentication
  * fence). Every handler is a fixed business operation — the page can never
- * pass an arbitrary command or script path. Paths are jailed: reads under
- * the workspace root, script execution only from the skill's own scripts
- * directory.
+ * pass an arbitrary command, script path, or output path.
  *
- * Security contract (mirrors the skill's scripts):
- *   - no writes outside the workspace root;
- *   - no reads outside whitelisted roots;
- *   - no shell interpolation anywhere: spawn with argv arrays only.
+ * Security contract:
+ *   - reads: workspace root, or a project's granted source dirs (images);
+ *   - writes: only inside the workspace root, computed server-side;
+ *   - execution: only the skill's own white-listed scripts, argv-form.
  */
 
 import { spawn } from 'node:child_process'
-import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createProjectStore, safeProjectName } from './projects.js'
+import { createTaskRegistry, OPS } from './task-registry.js'
 
 const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
 const SCRIPTS_DIR = resolve(PLUGIN_DIR, '..', 'skills', 'vlog-jianying-one-stop', 'scripts')
@@ -30,17 +29,12 @@ const WORKSPACE_ROOT = resolve(process.env.DSH_VLOG_WORKSPACE || join(homedir(),
 
 const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp'])
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024
+const MIME_BY_EXT = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' }
 
-/** Business-failure envelope, mirroring the Connection RPC wire schema. */
 function badRequest(message) {
   return { ok: false, error: { code: 'bad-request', message, details: { issues: [] } } }
 }
 
-/**
- * Adapt one payload handler to a Connection exact-Fetch-route handler:
- * unwrap the client-request envelope, run, reply with the server-response
- * envelope (HTTP stays 200; business failures ride the envelope).
- */
 function envelopeFetchHandler(run) {
   return async (request) => {
     let message
@@ -55,9 +49,9 @@ function envelopeFetchHandler(run) {
       return reply(badRequest('invalid client-request message'))
     }
     try {
-      return reply(await run(message.payload))
+      return reply(await run(message.payload || {}))
     } catch (error) {
-      return new Response(`handler failure: ${String(error?.message || error)}`, { status: 500 })
+      return reply(badRequest(String(error?.message || error)))
     }
   }
 }
@@ -73,7 +67,7 @@ function jail(input, root) {
 }
 
 /** Locate an executable on PATH, with the common Homebrew prefix as fallback. */
-function which(name) {
+export function which(name) {
   const pathEnv = process.env.PATH || ''
   for (const dir of pathEnv.split(':')) {
     if (dir && existsSync(join(dir, name))) return join(dir, name)
@@ -91,9 +85,7 @@ function runProcess(command, args, { timeoutMs = 30000, cwd } = {}) {
     const child = spawn(command, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
     let stdout = ''
     let stderr = ''
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL')
-    }, timeoutMs)
+    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs)
     child.stdout.on('data', (chunk) => { stdout += chunk })
     child.stderr.on('data', (chunk) => { stderr += chunk })
     child.on('error', (error) => {
@@ -107,40 +99,22 @@ function runProcess(command, args, { timeoutMs = 30000, cwd } = {}) {
   })
 }
 
-/** Project name → safe directory name (no path separators, no leading dots). */
-function safeProjectName(raw) {
-  if (typeof raw !== 'string') return null
-  const trimmed = raw.trim().replace(/[\\/:*?"<>|.-]+/g, '-').replace(/^-+|-+$/g, '')
-  return trimmed.length > 0 && trimmed.length <= 64 ? trimmed : null
-}
-
-const MIME_BY_EXT = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' }
-
 export function apply(ctx) {
-  const stateFile = join(WORKSPACE_ROOT, 'vlog-studio-sessions.json')
-
-  async function readState() {
-    try {
-      return JSON.parse(await readFile(stateFile, 'utf8'))
-    } catch {
-      return { projects: {} }
-    }
-  }
-
-  async function writeState(state) {
-    await mkdir(WORKSPACE_ROOT, { recursive: true })
-    const temp = stateFile + '.tmp'
-    await writeFile(temp, JSON.stringify(state, null, 2), 'utf8')
-    await rename(temp, stateFile)
-  }
+  const projectStore = createProjectStore(WORKSPACE_ROOT)
+  const taskRegistry = createTaskRegistry({
+    workspaceRoot: WORKSPACE_ROOT,
+    scriptsDir: SCRIPTS_DIR,
+    projectStore,
+    whichPython: () => which('python3'),
+  })
+  taskRegistry.recover().catch(() => {})
 
   const endpoints = {
     /** Stage 0 from the skill: run check-env.py and return its JSON report. */
     '/api/vlog-studio/env-check': async () => {
       const python = which('python3')
       if (!python) return badRequest('未找到 python3')
-      const script = join(SCRIPTS_DIR, 'check-env.py')
-      const result = await runProcess(python, [script, '--json'], { timeoutMs: 30000 })
+      const result = await runProcess(python, [join(SCRIPTS_DIR, 'check-env.py'), '--json'], { timeoutMs: 30000 })
       let report = null
       try {
         report = JSON.parse(result.stdout)
@@ -150,21 +124,13 @@ export function apply(ctx) {
       return {
         ok: true,
         value: {
-          report,
-          exitCode: result.code,
-          timedOut: result.timedOut,
-          stderrTail: result.stderr.slice(-1000),
-          python,
-          workspace: WORKSPACE_ROOT,
+          report, exitCode: result.code, timedOut: result.timedOut,
+          stderrTail: result.stderr.slice(-1000), python, workspace: WORKSPACE_ROOT,
         },
       }
     },
 
-    /**
-     * End-to-end fixture: generate one synthetic frame into the workspace
-     * (fixed path, no user input), then read it back as a data URL. Proves
-     * the host can spawn ffmpeg AND serve local images to the page.
-     */
+    /** End-to-end fixture: host spawns ffmpeg, page renders the frame back. */
     '/api/vlog-studio/fixture-frame': async () => {
       const dir = join(WORKSPACE_ROOT, '99_临时', 'phase1-fixture')
       const framePath = join(dir, 'fixture-frame.jpg')
@@ -182,23 +148,18 @@ export function apply(ctx) {
         }
       }
       const data = await readFile(framePath)
-      return {
-        ok: true,
-        value: {
-          dataUrl: `data:image/jpeg;base64,${data.toString('base64')}`,
-          framePath,
-          bytes: data.length,
-        },
-      }
+      return { ok: true, value: { dataUrl: `data:image/jpeg;base64,${data.toString('base64')}`, framePath, bytes: data.length } }
     },
 
-    /** Read one image inside the workspace as a data URL (thumbnail wall). */
+    /** Read one image as a data URL; workspace or a granted project source dir. */
     '/api/vlog-studio/read-image': async (payload) => {
-      let path
-      try {
-        path = jail(payload?.path, WORKSPACE_ROOT)
-      } catch (error) {
-        return badRequest(error.message)
+      let path = typeof payload?.path === 'string' ? resolve(payload.path) : ''
+      if (!path) return badRequest('path 缺失')
+      const inWorkspace = path === WORKSPACE_ROOT || path.startsWith(WORKSPACE_ROOT + sep)
+      if (!inWorkspace) {
+        const granted = typeof payload?.project === 'string'
+          && (await projectStore.isGrantedSource(payload.project, path))
+        if (!granted) return badRequest(`路径越界：仅允许工作区或项目 ${payload?.project || '(未指定)'} 的授权素材目录`)
       }
       const ext = extname(path).toLowerCase()
       if (!IMAGE_EXTENSIONS.has(ext)) return badRequest(`不允许的文件类型: ${ext}`)
@@ -211,6 +172,54 @@ export function apply(ctx) {
       if (data.length > MAX_IMAGE_BYTES) return badRequest('图片超过 5MB 限制')
       return { ok: true, value: { dataUrl: `data:${MIME_BY_EXT[ext]};base64,${data.toString('base64')}`, bytes: data.length } }
     },
+
+    // ---- Phase 2: projects + tasks ----
+
+    '/api/vlog-studio/projects.list': async () => ({
+      ok: true,
+      value: { workspace: WORKSPACE_ROOT, projects: await projectStore.list() },
+    }),
+
+    '/api/vlog-studio/projects.create': async (payload) => {
+      const project = await projectStore.create({ name: payload?.name, sourceDir: payload?.sourceDir })
+      return { ok: true, value: { project } }
+    },
+
+    '/api/vlog-studio/projects.grant-source': async (payload) => {
+      const name = safeProjectName(payload?.project)
+      if (!name) return badRequest('项目名无效')
+      const project = await projectStore.get(name)
+      if (!project) return badRequest(`项目不存在: ${name}`)
+      const updated = await projectStore.create({ name, sourceDir: payload?.path })
+      return { ok: true, value: { project: updated } }
+    },
+
+    '/api/vlog-studio/tasks.start': async (payload) => ({
+      ok: true,
+      value: { task: await taskRegistry.start({ project: payload?.project, op: payload?.op, params: payload?.params }) },
+    }),
+
+    '/api/vlog-studio/tasks.status': async (payload) => {
+      const task = await taskRegistry.status(String(payload?.taskId || ''))
+      if (!task) return badRequest('任务不存在')
+      return { ok: true, value: { task } }
+    },
+
+    '/api/vlog-studio/tasks.list': async (payload) => ({
+      ok: true,
+      value: { tasks: await taskRegistry.list(payload?.project || undefined) },
+    }),
+
+    '/api/vlog-studio/tasks.cancel': async (payload) => {
+      const task = await taskRegistry.cancel(String(payload?.taskId || ''))
+      if (!task) return badRequest('任务不存在或已结束')
+      return { ok: true, value: { task } }
+    },
+
+    '/api/vlog-studio/ops': async () => ({
+      ok: true,
+      value: { ops: Object.keys(OPS) },
+    }),
   }
 
   // Fetch routes need the connection service; profiles without it (headless)
@@ -227,7 +236,7 @@ export function apply(ctx) {
   })
 
   // Session creation lives host-side so the project→session mapping persists
-  // in the workspace state file and survives page reloads.
+  // in the workspace registry and survives page reloads.
   ctx.inject(['connection', 'sessionController'], (svcCtx) => {
     svcCtx.connection.fetch.register({
       path: '/api/vlog-studio/session',
@@ -236,22 +245,20 @@ export function apply(ctx) {
       fetch: envelopeFetchHandler(async (payload) => {
         const name = safeProjectName(payload?.projectName)
         if (!name) return badRequest('项目名无效（1-64 字符，不允许路径分隔符）')
-        const projectDir = join(WORKSPACE_ROOT, 'projects', name)
-        await mkdir(projectDir, { recursive: true })
+        const project = await projectStore.create({ name })
 
-        const state = await readState()
-        const existing = state.projects[name]?.sessionId
-        const request = existing ? { sessionId: existing, cwd: projectDir } : { cwd: projectDir }
+        const request = project.sessionId
+          ? { sessionId: project.sessionId, cwd: project.dir }
+          : { cwd: project.dir }
         const created = await svcCtx.sessionController.create(request)
         const sessionId = created?.sessionId
         if (typeof sessionId !== 'string' || !sessionId) return badRequest('会话创建失败：宿主未返回 sessionId')
 
-        state.projects[name] = { sessionId, projectDir, updatedAt: new Date().toISOString() }
-        await writeState(state)
-        return { ok: true, value: { sessionId, projectDir, reused: Boolean(existing) } }
+        if (!project.sessionId) await projectStore.attachSession(name, sessionId)
+        return { ok: true, value: { sessionId, projectDir: project.dir, reused: Boolean(project.sessionId) } }
       }),
     })
   })
 
-  ctx.logger?.info?.(`vlog-studio: workspace=${WORKSPACE_ROOT} hash=${createHash('sha1').update(WORKSPACE_ROOT).digest('hex').slice(0, 8)}`)
+  ctx.logger?.info?.(`vlog-studio: workspace=${WORKSPACE_ROOT} ops=${Object.keys(OPS).join(',')}`)
 }
