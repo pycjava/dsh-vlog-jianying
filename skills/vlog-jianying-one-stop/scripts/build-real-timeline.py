@@ -30,6 +30,13 @@ def fail(message: str) -> "SystemExit":
     return SystemExit(2)
 
 
+def safe_cell(value: object) -> object:
+    """CSV 公式注入防护：= + - @ 或控制符开头的单元格加 ' 前缀，防止 Excel/Numbers 执行公式。"""
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value
+
+
 def parse_creation_time(raw: object) -> datetime | None:
     if not raw:
         return None
@@ -134,7 +141,7 @@ def main() -> int:
     with output.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS)
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows([{key: safe_cell(value) for key, value in row.items()} for row in rows])
 
     print(json.dumps({
         "source_dir": str(source),

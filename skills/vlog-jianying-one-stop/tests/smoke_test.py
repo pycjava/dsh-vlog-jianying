@@ -138,6 +138,32 @@ class PureLogicTest(unittest.TestCase):
                                 "--output-path", Path(tmp) / "out.mp4")
         self.assertEqual(result.returncode, 2)
 
+    def test_inventory_escapes_formula_filenames(self) -> None:
+        """CSV 公式注入防护:= + - @ 开头的文件名写入 CSV 前必须加 ' 前缀。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "media"
+            source.mkdir()
+            (source / '=HYPERLINK("evil.example","点我").mp4').write_bytes(b"x")
+            (source / "+加号开头.mp4").write_bytes(b"x")
+            (source / "普通文件.mp4").write_bytes(b"x")
+            output = Path(tmp) / "out.csv"
+            result = run_script("inventory-media.py", "--source-dir", source, "--output-csv", output)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            with output.open("r", encoding="utf-8-sig", newline="") as handle:
+                names = {row["FileName"] for row in csv.DictReader(handle)}
+            self.assertIn("'=HYPERLINK(\"evil.example\",\"点我\").mp4", names)
+            self.assertIn("'+加号开头.mp4", names)
+            self.assertIn("普通文件.mp4", names)  # 正常文件名不受影响
+
+    def test_frames_refuses_output_inside_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "media"
+            source.mkdir()
+            result = run_script("prepare-review-frames.py", "--source-dir", source,
+                                "--output-dir", source / "预览")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("素材目录之外", result.stderr)
+
     def test_verify_rejects_missing_file(self) -> None:
         result = run_script("verify-export.py", "--video-path", "/nonexistent/final.mp4")
         self.assertEqual(result.returncode, 2)

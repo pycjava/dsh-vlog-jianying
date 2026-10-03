@@ -43,6 +43,13 @@ MOOD_KEYWORDS = {
 }
 
 
+def safe_cell(value: object) -> object:
+    """CSV 公式注入防护（本地适配补丁）：= + - @ 或控制符开头的单元格加 ' 前缀。"""
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build a local Vlog music index.")
     parser.add_argument("library", help="Local music library directory")
@@ -198,7 +205,7 @@ def main() -> int:
     with output.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=FIELDS)
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows([{key: safe_cell(value) for key, value in row.items()} for row in rows])
 
     degraded = sum(1 for row in rows if row["analysis_status"] != "ok")
     write_status(

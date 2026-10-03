@@ -37,6 +37,8 @@ dsh --profile web --dump-config | grep -A2 vlog-jianying
 
 新会话自动带上技能,无需重启;正在运行的旧会话不会热加载。
 
+> 注:desktop profile 由桌面应用独占管理,CLI 可能拒绝写入;对该 profile 请使用应用内的插件管理界面安装(或在本会话中让 agent 通过 plugin_manager 安装)。
+
 > 技能以 **rank 300(custom root)** 挂载:高于用户级 `~/.dsh/skills`(400)与 `~/.agents/skills`(500),低于项目级 `.dsh/skills`(100)。项目里同名技能永远赢。
 
 ## 升级与卸载
@@ -86,6 +88,12 @@ git clone --depth 1 https://github.com/iamcrisiloveyoutoo-commits/vlog-jianying-
 # 对比 /tmp/upstream 与 skills/vlog-jianying-one-stop/,更新 .upstream.json 的 commit
 # 本地适配改动尽量收敛在单独提交里,便于 rebase
 ```
+
+## 安全说明
+
+- **安装任何第三方 DSH bundle 都等于信任其代码**:bundle 的 `cordis.patch.yml` 可含 `!!js` 表达式,在配置加载时执行任意 JavaScript。本包的 patch 只做安装路径拼接(可自行审读),但安装来源不明的 bundle 前请先审读其内容;rank 300 的技能会遮蔽用户级同名技能,注意命名冲突。
+- **脚本安全约定**:全部脚本只用 Python 标准库 + ffmpeg/ffprobe,subprocess 一律参数数组调用(无 shell 注入面);输出 CSV 对 `= + - @` 开头的文件名做了公式注入转义,可安全用 Excel/Numbers 打开;绝不写入素材目录、不覆盖输入文件。
+- **数据出网点**(默认流程仅两处):剪映云空间上传(同一项目**首次上传前会向用户确认一次**)与可选的 faster-whisper 模型下载(HuggingFace,TLS)。其余流程完全离线。
 
 ## 许可与版权
 

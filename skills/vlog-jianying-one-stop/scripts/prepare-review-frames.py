@@ -26,6 +26,13 @@ def fail(message: str) -> "SystemExit":
     return SystemExit(2)
 
 
+def safe_cell(value: object) -> object:
+    """CSV 公式注入防护：= + - @ 或控制符开头的单元格加 ' 前缀，防止 Excel/Numbers 执行公式。"""
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value
+
+
 def probe_duration(ffprobe: str, path: Path) -> float | None:
     result = subprocess.run(
         [ffprobe, "-v", "error", "-show_entries", "format=duration",
@@ -55,12 +62,15 @@ def main() -> int:
     if not source.is_dir():
         raise fail(f"SourceDir 不存在或不是目录: {source}")
 
+    output = args.output_dir.expanduser().resolve()
+    if output == source or source in output.parents:
+        raise fail("OutputDir 必须位于素材目录之外；脚本绝不向素材目录写入。")
+
     ffprobe = shutil.which("ffprobe")
     ffmpeg = shutil.which("ffmpeg")
     if not ffprobe or not ffmpeg:
         raise fail("未找到 ffmpeg/ffprobe。请先安装 FFmpeg（macOS: brew install ffmpeg）。")
 
-    output = args.output_dir.expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
 
     videos = sorted(
@@ -117,7 +127,7 @@ def main() -> int:
     with manifest_path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS)
         writer.writeheader()
-        writer.writerows(manifest)
+        writer.writerows([{key: safe_cell(value) for key, value in row.items()} for row in manifest])
 
     print(json.dumps({
         "source_dir": str(source),

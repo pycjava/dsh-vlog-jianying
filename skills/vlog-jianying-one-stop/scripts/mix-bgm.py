@@ -103,6 +103,13 @@ def load_sound_intervals(csv_path: Path, video_duration: float) -> list[dict[str
     return intervals
 
 
+def safe_cell(value: object) -> object:
+    """CSV 公式注入防护：= + - @ 或控制符开头的单元格加 ' 前缀（对已转义值幂等）。"""
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value
+
+
 def update_music_index(index_csv: Path, bgm: Path) -> None:
     """命中曲目时 use_count +1 并记录 last_used；临时文件原子替换。"""
     if not index_csv.is_file():
@@ -130,7 +137,7 @@ def update_music_index(index_csv: Path, bgm: Path) -> None:
     with temp.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows([{key: safe_cell(value) for key, value in row.items()} for row in rows])
     temp.replace(index_path)
 
 
