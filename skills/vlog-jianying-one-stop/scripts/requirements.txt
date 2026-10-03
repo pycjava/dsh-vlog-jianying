@@ -1,0 +1,4 @@
+# 备用转写 transcribe-dialogue.py 的硬依赖（剪映智能字幕不可用时才需要）。
+# 核心盘点/时间线/抽帧/混音/校验脚本只依赖 Python 标准库 + ffmpeg/ffprobe，无需安装本文件。
+# 推荐在独立虚拟环境中安装：python3 -m venv .venv && source .venv/bin/activate
+faster-whisper>=1.0

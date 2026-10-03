@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
-
-from faster_whisper import WhisperModel
 
 
 def srt_time(seconds: float) -> str:
@@ -30,6 +29,17 @@ def main() -> None:
     args.output_srt.parent.mkdir(parents=True, exist_ok=True)
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
     args.model_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError:
+        print(
+            "缺少依赖 faster-whisper，本地备用转写不可用。\n"
+            "安装：python3 -m pip install -r scripts/requirements.txt\n"
+            "（推荐使用独立虚拟环境：python3 -m venv .venv && source .venv/bin/activate）",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
 
     model = WhisperModel(
         args.model,

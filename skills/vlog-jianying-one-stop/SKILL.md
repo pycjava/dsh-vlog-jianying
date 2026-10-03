@@ -1,6 +1,6 @@
 ---
 name: vlog-jianying-one-stop
-description: 在 Windows 与剪映专业版中完成默认 9:16、100 秒左右 Vlog 的 L3 规划—拍摄—剪辑闭环。用于把自然语言想法转成低门槛拍摄脚本，按事实时间线和镜头状态匹配冗余素材、补足场景过场、建立连续时间线，并在剪映完成画面、原声、旁白、智能识别人物对白、统一主字幕、少量章节标题、克制的轻网感画面/人物特效和音效，以及固定电视关机＋彩色“晚安”片尾后，通过本地曲库与 FFmpeg 自动或半自动完成选曲、片段切换踩点、人声闪避、混音、审片、成片导出，以及可编辑剪映草稿的本地备份与手机端云同步。以“远景/中景/近景＋画面行为＋可选角度”指导拍摄，不用摄影技术细节拒绝可用素材；只在不可替代故事段完全缺失或真实技术阻塞时暂停。
+description: 在 macOS / Windows 与剪映专业版中完成默认 9:16、100 秒左右 Vlog 的 L3 规划—拍摄—剪辑闭环。用于把自然语言想法转成低门槛拍摄脚本，按事实时间线和镜头状态匹配冗余素材、补足场景过场、建立连续时间线，并在剪映完成画面、原声、旁白、智能识别人物对白、统一主字幕、少量章节标题、克制的轻网感画面/人物特效和音效，以及固定电视关机＋彩色“晚安”片尾后，通过本地曲库与 FFmpeg 自动或半自动完成选曲、片段切换踩点、人声闪避、混音、审片、成片导出，以及可编辑剪映草稿的本地备份与手机端云同步。以“远景/中景/近景＋画面行为＋可选角度”指导拍摄，不用摄影技术细节拒绝可用素材；只在不可替代故事段完全缺失或真实技术阻塞时暂停。
 ---
 
 # Vlog 剪映 L3 V3 一站式制作
@@ -37,7 +37,7 @@ description: 在 Windows 与剪映专业版中完成默认 9:16、100 秒左右 
 9. 最多暂停一次常规确认。计划拍摄模式在开拍前确认；已有素材模式只在没有故事线时让用户选择一次提案。
 10. 保护原素材、音乐原件和已有草稿改动，不移动、不覆盖、不删除、不改名。改动草稿前先备份。
 11. 不直接改写未知版本的剪映草稿 JSON，也不向剪映 JSON 写 BGM 音量关键帧。
-12. 每个成片必须同时交付可编辑剪映草稿。草稿保留独立视频片段、字幕、原声、旁白、BGM、音效和特效，不用扁平化成片替代时间线；本地备份固定放入 `E:\codex\VLOG剪辑工作区\可编辑作品`。剪辑完成后默认直接把交付草稿上传到当前剪映账号的云空间/云草稿并等待同步完成，不要求用户再次提醒；手机续剪使用同一账号的云草稿。
+12. 每个成片必须同时交付可编辑剪映草稿。草稿保留独立视频片段、字幕、原声、旁白、BGM、音效和特效，不用扁平化成片替代时间线；本地备份固定放入 `<工作区>/可编辑作品`。剪辑完成后默认直接把交付草稿上传到当前剪映账号的云空间/云草稿并等待同步完成，不要求用户再次提醒；手机续剪使用同一账号的云草稿。
 
 ## 选择模式
 
@@ -66,9 +66,24 @@ description: 在 Windows 与剪映专业版中完成默认 9:16、100 秒左右 
 - 输出：1080×1920、30 fps、MP4、H.264、AAC 48 kHz、Rec.709 SDR。
 - 风格：生活记录、真实情绪、快慢交替，故事优先于炫技。
 - 音乐目录：项目 `05_音乐音效/library/`；用户可以指定已有本地目录。
-- 可编辑草稿目录：`E:\codex\VLOG剪辑工作区\可编辑作品\<项目名>_editable_<YYYYMMDD_HHMMSS>\`，每次新建版本，不覆盖旧草稿。
+- 工作区根目录：默认 `~/VLOG剪辑工作区`（Windows 上游默认为 `E:\codex\VLOG剪辑工作区`）；用户可指定任意已有目录，全程不强制移动素材。
+- 可编辑草稿目录：`<工作区>/可编辑作品/<项目名>_editable_<YYYYMMDD_HHMMSS>/`，每次新建版本，不覆盖旧草稿。
+
+脚本约定：以下命令中的 `<SKILL_DIR>` 指本技能所在目录（含 SKILL.md 的目录），执行时替换为实际绝对路径，不假定当前工作目录。全部脚本统一使用 `python3` 调用，退出码 0 为成功、2 为环境/输入错误（stderr 含可读原因）。
 
 用户明确要求覆盖默认值，但版权、安全、原素材保护和人声清楚规则不被覆盖。
+
+## 阶段 0：环境与工作区检查
+
+进入素材处理（阶段 2）之前先运行：
+
+```bash
+python3 <SKILL_DIR>/scripts/check-env.py
+```
+
+- 缺少 ffmpeg/ffprobe 时明确告知安装方式（macOS: `brew install ffmpeg`），不进入依赖它们的阶段。
+- faster-whisper、librosa 缺失只是功能降级（本地转写、节拍分析不可用），照常继续，并在完成回复中注明。
+- 与用户确认或按默认值确定 `<工作区>` 根目录；不存在则创建，不移动用户已有文件。
 
 ## 阶段 1：生成拍摄方案
 
@@ -85,15 +100,15 @@ description: 在 Windows 与剪映专业版中完成默认 9:16、100 秒左右 
 
 先运行：
 
-```powershell
-./scripts/inventory-media.ps1 -SourceDir <素材目录> -OutputCsv <项目目录/01_项目资料/00_素材盘点.csv>
-./scripts/build-real-timeline.ps1 -SourceDir <素材目录> -OutputCsv <项目目录/01_项目资料/00b_事实时间线.csv>
+```bash
+python3 <SKILL_DIR>/scripts/inventory-media.py --source-dir <素材目录> --output-csv <项目目录/01_项目资料/00_素材盘点.csv>
+python3 <SKILL_DIR>/scripts/build-real-timeline.py --source-dir <素材目录> --output-csv <项目目录/01_项目资料/00b_事实时间线.csv>
 ```
 
 需要看懂内容时运行：
 
-```powershell
-./scripts/prepare-review-frames.ps1 -SourceDir <素材目录> -OutputDir <项目目录/99_临时/素材预览>
+```bash
+python3 <SKILL_DIR>/scripts/prepare-review-frames.py --source-dir <素材目录> --output-dir <项目目录/99_临时/素材预览>
 ```
 
 逐个查看预览帧；必要时检查原视频、音频或转写。不得根据文件名猜画面。把超过阈值的时间间隔只当作场景边界候选，必须结合 beat 地点或画面语义确认，不能仅凭十分钟间隔强插过场。
@@ -121,8 +136,8 @@ description: 在 Windows 与剪映专业版中完成默认 9:16、100 秒左右 
 
 先运行本地曲库索引：
 
-```powershell
-python ./scripts/build-music-index.py <MusicLibraryPath> --output <项目目录/05_音乐音效/music-index.csv>
+```bash
+python3 <SKILL_DIR>/scripts/build-music-index.py <MusicLibraryPath> --output <项目目录/05_音乐音效/music-index.csv>
 ```
 
 ### 全自动模式
@@ -166,8 +181,8 @@ python ./scripts/build-music-index.py <MusicLibraryPath> --output <项目目录/
 
 只有剪映智能字幕不可用、识别失败，或主要对白明显无法使用时，才运行本地备用转写：
 
-```powershell
-python ./scripts/transcribe-dialogue.py <无BGM原声母版> <项目目录/04_字幕/00_本地转写初稿.srt> <项目目录/04_字幕/00_本地转写诊断.json> <项目目录/99_临时/asr-model> --model small
+```bash
+python3 <SKILL_DIR>/scripts/transcribe-dialogue.py <无BGM原声母版> <项目目录/04_字幕/00_本地转写初稿.srt> <项目目录/04_字幕/00_本地转写诊断.json> <项目目录/99_临时/asr-model> --model small
 ```
 
 备用转写只保留可听清、有效的对白，并导入剪映成为独立文字对象；不要求用户提供台词或逐条确认。低置信度、听不清或无信息量的内容直接省略，绝不猜写。剪映智能字幕和本地备用转写都失败时明确报告阻塞，不能悄悄交付没有人物对白字幕的版本。
@@ -178,8 +193,8 @@ python ./scripts/transcribe-dialogue.py <无BGM原声母版> <项目目录/04_�
 
 全自动模式运行：
 
-```powershell
-./scripts/mix-bgm.ps1 -VideoPath <无BGM母版> -BgmPath <本地音乐> -OutputPath <07_交付/项目名_final.mp4> -StartSeconds <音乐入点> -SoundIntervalsCsv <05_音乐音效/声音区间.csv>
+```bash
+python3 <SKILL_DIR>/scripts/mix-bgm.py --video-path <无BGM母版> --bgm-path <本地音乐> --output-path <07_交付/项目名_final.mp4> --start-seconds <音乐入点> --sound-intervals-csv <05_音乐音效/声音区间.csv>
 ```
 
 混音前先生成 `05_音乐音效/声音区间.csv`，至少包含 `start,end,sound_role,note`。无 BGM 母版中的人物原声默认保持正常音量；`dialogue` 和 `key_interaction` 区间降低 BGM，`ambience` 保持中等底乐，只有 `scenery_montage` 才提高 BGM。自动 sidechain 只在没有可靠声音区间表时作为降级方案，不能作为先压低人物原声的补救。BGM 必须随视频结束自然淡出；最终不看字幕完整试听，人物需要猜词或回放时继续降低 BGM 并重新输出。
@@ -188,7 +203,7 @@ python ./scripts/transcribe-dialogue.py <无BGM原声母版> <项目目录/04_�
 
 ### 可编辑草稿交付
 
-本步骤是每次成片后的默认自动交付，不等待用户再次提出“上传云草稿”。按 [jianying-execution.md](references/jianying-execution.md) 的“可编辑草稿与手机续剪”执行：从最终时间线复制交付草稿，保留所有片段和轨道；有 BGM 时在剪映界面中放回同一音乐、入点、裁切、淡入淡出和人声退位区间。保存后把完整草稿和关联本地素材备份到 `E:\codex\VLOG剪辑工作区\可编辑作品\<项目名>_editable_<YYYYMMDD_HHMMSS>\`，随后直接在剪映专业版中触发“上传到云空间/云草稿”，等待进度完成并确认桌面端显示同步成功。E 盘目录是本地可恢复备份，手机版打开的是云空间草稿；不得把“已复制到 E 盘”报告成“手机已可打开”。
+本步骤是每次成片后的默认自动交付，不等待用户再次提出“上传云草稿”。按 [jianying-execution.md](references/jianying-execution.md) 的“可编辑草稿与手机续剪”执行：从最终时间线复制交付草稿，保留所有片段和轨道；有 BGM 时在剪映界面中放回同一音乐、入点、裁切、淡入淡出和人声退位区间。保存后把完整草稿和关联本地素材备份到 `<工作区>/可编辑作品/<项目名>_editable_<YYYYMMDD_HHMMSS>/`，随后直接在剪映专业版中触发“上传到云空间/云草稿”，等待进度完成并确认桌面端显示同步成功。工作区目录是本地可恢复备份，手机版打开的是云空间草稿；不得把“已复制到工作区”报告成“手机已可打开”。
 
 若云空间未登录、容量不足、网络失败或素材/效果不支持跨端，同样交付成片和本地可编辑草稿，但明确报告“手机云同步待完成”，不能声称手机续剪已经就绪。
 
@@ -205,8 +220,8 @@ python ./scripts/transcribe-dialogue.py <无BGM原声母版> <项目目录/04_�
 
 发现问题就直接修改并重新导出，不建立面向用户的分数验收。最后运行：
 
-```powershell
-./scripts/verify-export.ps1 -VideoPath <最终成片> -TargetSeconds <目标秒数> -ExpectedWidth <宽> -ExpectedHeight <高> -ExpectedFps 30
+```bash
+python3 <SKILL_DIR>/scripts/verify-export.py --video-path <最终成片> --target-seconds <目标秒数> --expected-width <宽> --expected-height <高> --expected-fps 30
 ```
 
 文件检查只确认可播放、时长、画幅和音视频流，不替代完整审片。

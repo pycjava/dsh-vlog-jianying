@@ -1,3 +1,5 @@
 node_modules/
 .upstream/
 *.tgz
+.scratch/
+__pycache__/

@@ -1,0 +1,3 @@
+# 可选依赖：build-music-index.py 的曲库节拍/BPM 分析。
+# 缺失时索引脚本自动降级（analysis_status=degraded:no-librosa），不阻塞流程。
+librosa>=0.10

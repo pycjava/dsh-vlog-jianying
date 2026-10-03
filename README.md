@@ -2,7 +2,22 @@
 
 [vlog-jianying-one-stop](https://github.com/iamcrisiloveyoutoo-commits/vlog-jianying-one-stop) 技能的 DSH 插件版:面向剪映专业版的 Vlog 一站式自动剪辑工作流——从一句自然语言到拍摄脚本、事实时间线、宽容选片、剪映执行、字幕、配乐混音、审片,最终交付成片与可编辑剪映草稿。
 
-技能正文当前与上游保持一致(Windows + PowerShell 取向);macOS / 本机适配在后续迭代进行,见下文「适配状态」。
+技能脚本已迁移为跨平台 Python 3(仅标准库 + ffmpeg/ffprobe),macOS 与 Windows 均可运行;剪映界面操作仍以剪映专业版为准,macOS 差异见技能内 `references/jianying-execution.md` 的「平台差异」注记。
+
+## 环境准备
+
+| 依赖 | 必需性 | 安装 |
+|---|---|---|
+| Python 3.10+ | 必需 | macOS 自带或 `brew install python` |
+| ffmpeg / ffprobe | 必需(媒体处理阶段) | `brew install ffmpeg`(Windows: 官网下载并加入 PATH) |
+| faster-whisper | 可选(剪映智能字幕失败时的本地备用转写) | `pip install -r scripts/requirements.txt` |
+| librosa | 可选(曲库 BPM/节拍分析;缺失自动降级) | `pip install -r scripts/requirements-optional.txt` |
+
+安装后随时自检:
+
+```sh
+python3 skills/vlog-jianying-one-stop/scripts/check-env.py
+```
 
 ## 安装
 
@@ -24,31 +39,54 @@ dsh --profile web --dump-config | grep -A2 vlog-jianying
 
 > 技能以 **rank 300(custom root)** 挂载:高于用户级 `~/.dsh/skills`(400)与 `~/.agents/skills`(500),低于项目级 `.dsh/skills`(100)。项目里同名技能永远赢。
 
+## 升级与卸载
+
+```sh
+# 升级:重新 npm pack 后再次 add(同名同版本先 remove)
+dsh plugin --profile web remove dsh-vlog-jianying
+dsh plugin --profile web add ./dsh-vlog-jianying-<新版本>.tgz
+
+# 卸载
+dsh plugin --profile web remove dsh-vlog-jianying
+dsh plugin --profile desktop remove dsh-vlog-jianying
+```
+
+升级前建议先运行一次冒烟测试(见下),升级后在新会话中重跑 `check-env.py`。
+
 ## 包含的技能
 
 - `vlog-jianying-one-stop`:默认 9:16、约 100 秒竖屏 Vlog 的规划—拍摄—剪辑闭环。两种模式:先规划后拍(A),或已有素材直接剪(B)。配乐只使用本地曲库,不下载版权音乐。
 
-## 适配状态
+## 测试
 
-上游面向 Windows + 剪映专业版,当前原样挂载,已知不适用项:
+```sh
+python3 skills/vlog-jianying-one-stop/tests/smoke_test.py
+```
+
+纯标准库测试(参数校验、覆盖保护、降级路径)始终执行;装了 ffmpeg 时自动追加端到端用例(合成素材 → 盘点 → 时间线 → 抽帧 → 混音 → 校验)。
+
+## 适配状态
 
 | 上游假设 | 现状 |
 |---|---|
-| PowerShell 脚本(`scripts/*.ps1`) | macOS 无 PowerShell 环境,待改写为 bash/node |
-| 备份目录 `E:\codex\VLOG剪辑工作区` | 路径不存在,待改为可配置 |
-| 剪映专业版 Windows 界面与云同步入口 | macOS 版界面不同,执行章节待适配 |
+| PowerShell 脚本(`scripts/*.ps1`) | ✅ 已迁移 Python 3(`.py`);`.ps1` 保留作上游对照,验证稳定后退役 |
+| 备份目录 `E:\codex\VLOG剪辑工作区` | ✅ 已参数化为 `<工作区>`,默认 `~/VLOG剪辑工作区` |
+| 剪映专业版 Windows 界面与云同步入口 | ⚠️ 已补 macOS 注记,**首次实机执行时需逐项核对界面入口** |
 | `agents/openai.yaml`(Codex 展示配置) | 未随包分发,DSH 不需要 |
 
 ## 从上游同步
 
-上游 pin 记录在 [.upstream.json](.upstream.json)。当前为手动 vendoring:
+上游 pin 记录在 [.upstream.json](.upstream.json)。同步纪律:
+
+1. 内容层(SKILL.md / references/ / scripts/)的**通用修复先提上游 PR**,本仓库只保留尚未合并的适配差异。
+2. 同步上游后逐项检查本地补丁是否仍需保留,并跑一遍冒烟测试。
 
 ```sh
 git clone --depth 1 https://github.com/iamcrisiloveyoutoo-commits/vlog-jianying-one-stop /tmp/upstream
-# 更新 .upstream.json 的 commit 后,把 SKILL.md / references/ / scripts/
-# 拷入 skills/vlog-jianying-one-stop/,适配改动尽量收敛在单独提交里
+# 对比 /tmp/upstream 与 skills/vlog-jianying-one-stop/,更新 .upstream.json 的 commit
+# 本地适配改动尽量收敛在单独提交里,便于 rebase
 ```
 
 ## 许可与版权
 
-技能正文版权属上游作者 [iamcrisiloveyoutoo-commits](https://github.com/iamcrisiloveyoutoo-commits/vlog-jianying-one-stop);上游仓库未附带 LICENSE 文件,分发前请留意。本仓库的插件打包与适配改动以 MIT 发布。
+技能正文版权属上游作者 [iamcrisiloveyoutoo-commits](https://github.com/iamcrisiloveyoutoo-commits/vlog-jianying-one-stop)。**上游仓库未附带 LICENSE 文件(已核实),在作者补充许可证或另行授权前,请勿公开再分发本包。**本仓库的插件打包与适配改动以 MIT 发布。

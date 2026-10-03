@@ -33,8 +33,8 @@
 
 运行：
 
-```powershell
-python ./scripts/build-music-index.py <MusicLibraryPath> --output <项目目录/05_音乐音效/music-index.csv>
+```bash
+python3 <SKILL_DIR>/scripts/build-music-index.py <MusicLibraryPath> --output <项目目录/05_音乐音效/music-index.csv>
 ```
 
 索引字段：
@@ -153,13 +153,13 @@ start,end,sound_role,note
 
 运行：
 
-```powershell
-./scripts/mix-bgm.ps1 \
-  -VideoPath <无BGM母版> \
-  -BgmPath <音乐文件> \
-  -OutputPath <07_交付/项目名_final.mp4> \
-  -StartSeconds <音乐入点> \
-  -SoundIntervalsCsv <05_音乐音效/声音区间.csv>
+```bash
+python3 <SKILL_DIR>/scripts/mix-bgm.py \
+  --video-path <无BGM母版> \
+  --bgm-path <音乐文件> \
+  --output-path <07_交付/项目名_final.mp4> \
+  --start-seconds <音乐入点> \
+  --sound-intervals-csv <05_音乐音效/声音区间.csv>
 ```
 
 默认流程：
@@ -177,7 +177,7 @@ start,end,sound_role,note
 
 ## 验收
 
-- 运行 `verify-export.ps1`，确认视频流、音频流、时长、画幅和帧率。
+- 运行 `verify-export.py`，确认视频流、音频流、时长、画幅和帧率。
 - 音乐不得晚于最后一帧，不能产生黑屏或音乐尾巴。
 - 试听钩子、观点对话、趣味互动、持续环境声和纯音乐段。
 - 先单独试听无 BGM 母版，确认人物原声没有在上游被错误压低或静音；有问题先修母版，不能只靠降低 BGM 补救。
