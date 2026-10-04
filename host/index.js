@@ -9,7 +9,8 @@
  * Security contract:
  *   - reads: workspace root, or a project's granted source dirs (images);
  *   - writes: only inside the workspace root, computed server-side;
- *   - execution: only the skill's own white-listed scripts, argv-form.
+ *   - execution: only the skill's own white-listed scripts, argv-form,
+ *     plus a fixed-argv OS folder picker (pick-folder, no client input).
  */
 
 import { spawn } from 'node:child_process'
@@ -20,6 +21,7 @@ import { dirname, extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createProjectStore, safeProjectName } from './projects.js'
 import { createTaskRegistry, OPS } from './task-registry.js'
+import { pickFolder } from './picker.js'
 
 const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
 const SCRIPTS_DIR = resolve(PLUGIN_DIR, '..', 'skills', 'vlog-jianying-one-stop', 'scripts')
@@ -130,6 +132,15 @@ export function apply(ctx) {
           stderrTail: result.stderr.slice(-1000), python, workspace: WORKSPACE_ROOT,
         },
       }
+    },
+
+    /** Pop the OS folder-picker (fixed argv, no client input); the returned
+     *  path still has to pass projects.grant-source before anything reads it. */
+    '/api/vlog-studio/pick-folder': async () => {
+      const picked = await pickFolder()
+      if (!picked.ok) return badRequest(picked.error)
+      if (picked.cancelled) return { ok: true, value: { cancelled: true } }
+      return { ok: true, value: { path: picked.path } }
     },
 
     /** End-to-end fixture: host spawns ffmpeg, page renders the frame back. */

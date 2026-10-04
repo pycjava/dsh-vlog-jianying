@@ -78,6 +78,21 @@ async function callRoute(path, payload) {
 // session route: must NOT exist without sessionController
 check('session route absent without sessionController', !routes.has('/api/vlog-studio/session'))
 
+// pick-folder: route registered; the OS dialog itself is not driven headlessly
+check('pick-folder route registered', routes.has('/api/vlog-studio/pick-folder'))
+{
+  const picker = await import('../host/picker.js')
+  const mac = picker.buildPickerCommand('darwin')
+  check('picker darwin = osascript choose folder', mac.command === 'osascript' && mac.args.join(' ').includes('choose folder'))
+  const win = picker.buildPickerCommand('win32')
+  check('picker win32 = powershell FolderBrowserDialog', win.command === 'powershell' && win.args.join(' ').includes('FolderBrowserDialog'))
+  check('picker parses quoted posix path', picker.parsePickerOutput('darwin', { code: 0, stdout: '"/Volumes/SD/DCIM/"\n', stderr: '' }).path === '/Volumes/SD/DCIM')
+  check('picker detects user cancel', picker.parsePickerOutput('darwin', { code: 1, stdout: '', stderr: 'execution error: User canceled. (-128)' }).cancelled === true)
+  check('picker win32 empty output = cancelled', picker.parsePickerOutput('win32', { code: 0, stdout: '', stderr: '' }).cancelled === true)
+  check('picker win32 path parsed', picker.parsePickerOutput('win32', { code: 0, stdout: 'D:\\Media\\GoPro\r\n', stderr: '' }).path === 'D:\\Media\\GoPro')
+  check('picker timeout reported as error', picker.parsePickerOutput('darwin', { code: null, stdout: '', stderr: '', timedOut: true }).ok === false)
+}
+
 // ---- client bundle: execute the lazy factory with a stub React ----
 {
   const registered = []
@@ -115,6 +130,17 @@ check('session route absent without sessionController', !routes.has('/api/vlog-s
   check('registers main page keyed vlog-studio', mainEntry?.registration?.options?.key === 'vlog-studio')
   check('registers sidebar entry panel label order 20', navEntry?.registration?.options?.order === 20 && navEntry?.registration?.options?.id === 'vlog-studio' && navEntry?.registration?.options?.label() === 'panel')
   check('page component renders without throwing', typeof mainEntry?.registration?.component === 'function' && Boolean(mainEntry.registration.component({ t: (k) => k, api: async () => ({ ok: true, value: { projects: [] } }), openSession: () => {}, clipboard: async () => {} })))
+
+  // advanceChain: pure prepare-chain state machine
+  const adv = face.advanceChain
+  check('client exports advanceChain', typeof adv === 'function')
+  if (typeof adv === 'function') {
+    check('chain: running/cancelling keep polling', adv({ op: 'inventory' }, 'running').action === 'poll' && adv({ op: 'inventory' }, 'cancelling').action === 'poll')
+    check('chain: failed/cancelled/interrupted fail closed', adv({ op: 'timeline' }, 'failed').action === 'fail' && adv({ op: 'frames' }, 'cancelled').action === 'fail' && adv({ op: 'inventory' }, 'interrupted').action === 'fail')
+    check('chain: inventory → timeline → frames', adv({ op: 'inventory' }, 'succeeded').action === 'start' && adv({ op: 'inventory' }, 'succeeded').op === 'timeline' && adv({ op: 'timeline' }, 'succeeded').op === 'frames')
+    check('chain: frames success finishes the chain', adv({ op: 'frames' }, 'succeeded').action === 'done')
+    check('chain: unknown op fails instead of restarting', adv({ op: 'nope' }, 'succeeded').action === 'fail')
+  }
 }
 
 rmSync(workspace, { recursive: true, force: true })
