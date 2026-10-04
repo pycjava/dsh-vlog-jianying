@@ -8,6 +8,9 @@
  *
  * Security contract:
  *   - reads: workspace root, or a project's granted source dirs (images);
+ *   - grants: a source dir is auto-allowed only when the host witnessed the
+ *     user pick it this process; every other grant path requires a native
+ *     confirmation dialog (audit M1 — the page must not widen its own reads);
  *   - writes: only inside the workspace root, computed server-side;
  *   - execution: only the skill's own white-listed scripts, argv-form,
  *     plus a fixed-argv OS folder picker (pick-folder, no client input).
@@ -21,7 +24,7 @@ import { dirname, extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createProjectStore, safeProjectName } from './projects.js'
 import { createTaskRegistry, OPS } from './task-registry.js'
-import { pickFolder } from './picker.js'
+import { pickFolder, createGrantAuthorizer } from './picker.js'
 
 const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
 const SCRIPTS_DIR = resolve(PLUGIN_DIR, '..', 'skills', 'vlog-jianying-one-stop', 'scripts')
@@ -105,6 +108,7 @@ function runProcess(command, args, { timeoutMs = 30000, cwd } = {}) {
 
 export function apply(ctx) {
   const projectStore = createProjectStore(WORKSPACE_ROOT)
+  const grants = createGrantAuthorizer()
   const taskRegistry = createTaskRegistry({
     workspaceRoot: WORKSPACE_ROOT,
     scriptsDir: SCRIPTS_DIR,
@@ -135,11 +139,13 @@ export function apply(ctx) {
     },
 
     /** Pop the OS folder-picker (fixed argv, no client input); the returned
-     *  path still has to pass projects.grant-source before anything reads it. */
+     *  path is witnessed so a follow-up grant needs no extra confirmation,
+     *  and still has to pass projects.grant-source before anything reads it. */
     '/api/vlog-studio/pick-folder': async () => {
       const picked = await pickFolder()
       if (!picked.ok) return badRequest(picked.error)
       if (picked.cancelled) return { ok: true, value: { cancelled: true } }
+      grants.witness(picked.path)
       return { ok: true, value: { path: picked.path } }
     },
 
@@ -218,6 +224,10 @@ export function apply(ctx) {
     }),
 
     '/api/vlog-studio/projects.create': async (payload) => {
+      if (typeof payload?.sourceDir === 'string' && payload.sourceDir) {
+        const verdict = await grants.authorize(payload.sourceDir)
+        if (!verdict.ok) return verdict
+      }
       const project = await projectStore.create({ name: payload?.name, sourceDir: payload?.sourceDir })
       return { ok: true, value: { project } }
     },
@@ -227,6 +237,13 @@ export function apply(ctx) {
       if (!name) return badRequest('项目名无效')
       const project = await projectStore.get(name)
       if (!project) return badRequest(`项目不存在: ${name}`)
+      // Re-granting a dir this project already holds changes nothing.
+      const alreadyGranted = typeof payload?.path === 'string'
+        && (await projectStore.isGrantedSource(name, payload.path))
+      if (!alreadyGranted) {
+        const verdict = await grants.authorize(payload?.path)
+        if (!verdict.ok) return verdict
+      }
       const updated = await projectStore.create({ name, sourceDir: payload?.path })
       return { ok: true, value: { project: updated } }
     },

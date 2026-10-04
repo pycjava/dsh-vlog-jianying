@@ -93,6 +93,49 @@ check('pick-folder route registered', routes.has('/api/vlog-studio/pick-folder')
   check('picker timeout reported as error', picker.parsePickerOutput('darwin', { code: null, stdout: '', stderr: '', timedOut: true }).ok === false)
 }
 
+// grant confirmation (audit M1): hostile paths must travel as argv/env, never as script text
+{
+  const picker = await import('../host/picker.js')
+  const { buildGrantConfirmCommand, parseGrantConfirmOutput, confirmGrant, createGrantAuthorizer } = picker
+  const evil = '/tmp/x"; display dialog "pwned"\nsecond line'
+  const mac = buildGrantConfirmCommand('darwin')
+  check('grant-confirm darwin = osascript run-handler', mac.command === 'osascript' && mac.args[0] === '-e' && mac.args[1].includes('on run argv') && mac.args[1].includes('display dialog') && mac.args.at(-1) === '--')
+  const win = buildGrantConfirmCommand('win32')
+  check('grant-confirm win32 path goes via env var', win.envKey === 'VSW_GRANT_PATH' && win.args.join(' ').includes('$env:VSW_GRANT_PATH'))
+  check('grant-confirm OK = confirmed', parseGrantConfirmOutput('darwin', { code: 0 }).confirmed === true)
+  check('grant-confirm cancel = denied with reason', parseGrantConfirmOutput('darwin', { code: 1, stderr: 'User canceled' }).confirmed === false)
+  check('grant-confirm timeout = denied', parseGrantConfirmOutput('win32', { timedOut: true }).confirmed === false && /超时/.test(parseGrantConfirmOutput('win32', { timedOut: true }).reason))
+  const seen = []
+  await confirmGrant(evil, { platform: 'darwin', run: (cmd, argv, opts) => (seen.push({ cmd, argv, opts }), { code: 0 }) })
+  check('confirmGrant darwin appends path as trailing argv', seen[0].argv.at(-1) === evil && !seen[0].argv.slice(0, -1).some((a) => a.includes(evil)) && seen[0].opts === undefined)
+  await confirmGrant('D:\\X Y', { platform: 'win32', run: (cmd, argv, opts) => (seen.push({ cmd, argv, opts }), { code: 0 }) })
+  check('confirmGrant win32 carries path in env only', seen[1].opts?.env?.VSW_GRANT_PATH === 'D:\\X Y' && !seen[1].argv.some((a) => a.includes('D:\\X Y')))
+
+  // authorizer state machine: witness short-circuit, existence pre-check, cancel, remember
+  const calls = []
+  const auth = createGrantAuthorizer({ confirm: async (p) => { calls.push(p); return { confirmed: false, reason: '用户未确认授权（已取消）' } } })
+  const missing = await auth.authorize('/nonexistent-sec-poc')
+  check('authorizer denies missing dir without dialog', missing.ok === false && calls.length === 0 && /不存在/.test(missing.error?.message))
+  const empty = await auth.authorize('')
+  check('authorizer rejects empty path outright', empty.ok === false && calls.length === 0 && empty.error?.message === 'path 缺失')
+  const grantDir = mkdtempSync(join(tmpdir(), 'vlog-grant-'))
+  const denied = await auth.authorize(grantDir)
+  check('authorizer forwards existing dir to confirm', calls.length === 1 && calls[0] === grantDir && denied.ok === false && denied.error?.message.includes('未确认'))
+  auth.witness(grantDir)
+  check('authorizer witnessed path skips dialog', (await auth.authorize(grantDir)).ok === true && calls.length === 1)
+  const auth2 = createGrantAuthorizer({ confirm: async () => ({ confirmed: true }) })
+  check('authorizer confirms on OK and remembers', (await auth2.authorize(grantDir)).ok === true && (await auth2.authorize(grantDir)).ok === true)
+  rmSync(grantDir, { recursive: true, force: true })
+}
+
+// grant guard reachable through the real RPC routes (no dialog: missing dir fails first)
+{
+  const made = await callRoute('/api/vlog-studio/projects.create', { name: 'sec-poc' })
+  check('projects.create without sourceDir needs no dialog', made.body?.result?.ok === true)
+  const denied = await callRoute('/api/vlog-studio/projects.grant-source', { project: 'sec-poc', path: '/nonexistent-sec-poc' })
+  check('grant-source guarded by authorizer', denied.body?.result?.ok === false && /不存在/.test(denied.body?.result?.error?.message))
+}
+
 // ---- client bundle: execute the lazy factory with a stub React ----
 {
   const registered = []

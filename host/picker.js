@@ -9,8 +9,11 @@
  */
 
 import { spawn } from 'node:child_process'
+import { stat } from 'node:fs/promises'
+import { resolve } from 'node:path'
 
 export const PICKER_TIMEOUT_MS = 10 * 60 * 1000 // user may browse a while
+export const GRANT_CONFIRM_TIMEOUT_MS = 5 * 60 * 1000 // user may be away
 
 /** Fixed argv per platform. No client input ever reaches these. */
 export function buildPickerCommand(platform = process.platform) {
@@ -78,4 +81,102 @@ export async function pickFolder({ platform = process.platform, run } = {}) {
   }))
   const result = await exec(command, args)
   return parsePickerOutput(platform, result)
+}
+
+/**
+ * Security fix (audit M1): the page can name any existing directory in a
+ * grant RPC, which would silently widen read-image to that whole tree. The
+ * dialog below is the user's explicit key-node confirmation for every grant
+ * path the host did not witness through its own pick-folder this process.
+ *
+ * Injection safety: the path never enters script text. darwin passes it as
+ * an osascript run-handler argument (after `--`); windows reads it from an
+ * environment variable. Both survive arbitrary quotes/newlines verbatim.
+ */
+export function buildGrantConfirmCommand(platform = process.platform) {
+  if (platform === 'darwin') {
+    return {
+      command: 'osascript',
+      args: [
+        '-e',
+        'on run argv\n'
+          + ' set msg to "授权以下目录作为本项目的只读素材源：" & (item 1 of argv)\n'
+          + ' display dialog msg with title "vlog-studio 素材授权" buttons {"取消", "授权"}'
+          + ' default button "授权" cancel button "取消" with icon caution\n'
+          + 'end run',
+        '--',
+      ],
+      // caller appends the path as one trailing argv element
+    }
+  }
+  return {
+    command: 'powershell',
+    args: [
+      '-NoProfile', '-STA', '-Command',
+      '[void][System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms");'
+        + ' $r = [System.Windows.Forms.MessageBox]::Show("授权以下目录作为本项目的只读素材源？`n" + $env:VSW_GRANT_PATH,'
+        + ' "vlog-studio 素材授权", [System.Windows.Forms.MessageBoxButtons]::OKCancel,'
+        + ' [System.Windows.Forms.MessageBoxIcon]::Warning);'
+        + ' if ($r -eq [System.Windows.Forms.DialogResult]::OK) { exit 0 } else { exit 1 }',
+    ],
+    envKey: 'VSW_GRANT_PATH',
+  }
+}
+
+/** { code, stdout, stderr, timedOut } → { confirmed, reason? } */
+export function parseGrantConfirmOutput(platform, result) {
+  if (result?.timedOut) return { confirmed: false, reason: '确认窗口超时未响应，请重试' }
+  if (result?.code === 0) return { confirmed: true }
+  return { confirmed: false, reason: '用户未确认授权（已取消）' }
+}
+
+/** Pop the confirmation; `run` injectable for tests (receives options with env). */
+export async function confirmGrant(path, { platform = process.platform, run } = {}) {
+  const built = buildGrantConfirmCommand(platform)
+  const pathString = String(path)
+  const argv = built.envKey ? built.args : [...built.args, pathString]
+  const options = built.envKey ? { env: { ...process.env, [built.envKey]: pathString } } : undefined
+  const exec = run || ((cmd, a, opts) => new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(cmd, a, { stdio: ['ignore', 'pipe', 'pipe'], ...opts })
+    let stdout = ''
+    let stderr = ''
+    const timer = setTimeout(() => child.kill('SIGKILL'), GRANT_CONFIRM_TIMEOUT_MS)
+    child.stdout.on('data', (chunk) => { stdout += chunk })
+    child.stderr.on('data', (chunk) => { stderr += chunk })
+    child.on('error', (error) => { clearTimeout(timer); rejectPromise(error) })
+    child.on('close', (code, signal) => {
+      clearTimeout(timer)
+      resolvePromise({ code, stdout, stderr, timedOut: signal === 'SIGKILL' })
+    })
+  }))
+  return parseGrantConfirmOutput(platform, await exec(built.command, argv, options))
+}
+
+function badRequest(message) {
+  return { ok: false, error: { code: 'bad-request', message, details: { issues: [] } } }
+}
+
+/**
+ * Grant gate for the RPC layer. A path is auto-allowed only when the host
+ * itself saw the user pick it (pick-folder witness, this process); anything
+ * else — typed paths, drag-dropped f.path values, fabricated strings — gets
+ * a native confirm dialog before it can widen read access.
+ */
+export function createGrantAuthorizer({ witnessed = new Set(), confirm = confirmGrant } = {}) {
+  return {
+    witness(path) {
+      witnessed.add(resolve(String(path)))
+    },
+    async authorize(path) {
+      if (typeof path !== 'string' || path.trim() === '') return badRequest('path 缺失')
+      const grant = resolve(String(path))
+      if (witnessed.has(grant)) return { ok: true }
+      const info = await stat(grant).catch(() => null)
+      if (!info?.isDirectory()) return badRequest(`素材目录不存在或不是目录: ${grant}`)
+      const verdict = await confirm(grant)
+      if (!verdict.confirmed) return badRequest(verdict.reason || '用户未确认授权')
+      witnessed.add(grant)
+      return { ok: true }
+    },
+  }
 }
