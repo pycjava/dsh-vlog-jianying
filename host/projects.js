@@ -107,7 +107,8 @@ export function createProjectStore(workspaceRoot) {
         s.projects[safe] = project
       }
       if (sourceDir !== undefined && sourceDir !== null && sourceDir !== '') {
-        const grant = resolve(String(sourceDir))
+        if (typeof sourceDir !== 'string') throw new Error('素材目录必须是字符串路径')
+        const grant = resolve(sourceDir)
         if (!existsSync(grant) || !statSync(grant).isDirectory()) {
           throw new Error(`素材目录不存在或不是目录: ${grant}`)
         }

@@ -63,14 +63,15 @@ export function parsePickerOutput(platform, result) {
   return { ok: false, error: `选择文件夹失败: ${(stderr || stdout).slice(0, 300)}` }
 }
 
-/** Run the picker; `run` injectable for tests. */
-export async function pickFolder({ platform = process.platform, run } = {}) {
-  const { command, args } = buildPickerCommand(platform)
-  const exec = run || ((cmd, argv) => new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(cmd, argv, { stdio: ['ignore', 'pipe', 'pipe'] })
+/** Shared argv-form subprocess lifecycle: collect output, kill on timeout.
+ *  Both native dialogs (folder picker + grant confirm) run through this so
+ *  their timeout/error behaviour can never drift apart. */
+export function execWithTimeout(command, args, { timeoutMs, env } = {}) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'], ...(env ? { env } : {}) })
     let stdout = ''
     let stderr = ''
-    const timer = setTimeout(() => child.kill('SIGKILL'), PICKER_TIMEOUT_MS)
+    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs)
     child.stdout.on('data', (chunk) => { stdout += chunk })
     child.stderr.on('data', (chunk) => { stderr += chunk })
     child.on('error', (error) => { clearTimeout(timer); rejectPromise(error) })
@@ -78,7 +79,13 @@ export async function pickFolder({ platform = process.platform, run } = {}) {
       clearTimeout(timer)
       resolvePromise({ code, stdout, stderr, timedOut: signal === 'SIGKILL' })
     })
-  }))
+  })
+}
+
+/** Run the picker; `run` injectable for tests. */
+export async function pickFolder({ platform = process.platform, run } = {}) {
+  const { command, args } = buildPickerCommand(platform)
+  const exec = run || ((cmd, argv) => execWithTimeout(cmd, argv, { timeoutMs: PICKER_TIMEOUT_MS }))
   const result = await exec(command, args)
   return parsePickerOutput(platform, result)
 }
@@ -136,19 +143,7 @@ export async function confirmGrant(path, { platform = process.platform, run } = 
   const pathString = String(path)
   const argv = built.envKey ? built.args : [...built.args, pathString]
   const options = built.envKey ? { env: { ...process.env, [built.envKey]: pathString } } : undefined
-  const exec = run || ((cmd, a, opts) => new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(cmd, a, { stdio: ['ignore', 'pipe', 'pipe'], ...opts })
-    let stdout = ''
-    let stderr = ''
-    const timer = setTimeout(() => child.kill('SIGKILL'), GRANT_CONFIRM_TIMEOUT_MS)
-    child.stdout.on('data', (chunk) => { stdout += chunk })
-    child.stderr.on('data', (chunk) => { stderr += chunk })
-    child.on('error', (error) => { clearTimeout(timer); rejectPromise(error) })
-    child.on('close', (code, signal) => {
-      clearTimeout(timer)
-      resolvePromise({ code, stdout, stderr, timedOut: signal === 'SIGKILL' })
-    })
-  }))
+  const exec = run || ((cmd, a, opts) => execWithTimeout(cmd, a, { timeoutMs: GRANT_CONFIRM_TIMEOUT_MS, env: opts?.env }))
   return parseGrantConfirmOutput(platform, await exec(built.command, argv, options))
 }
 

@@ -136,6 +136,22 @@ check('pick-folder route registered', routes.has('/api/vlog-studio/pick-folder')
   check('grant-source guarded by authorizer', denied.body?.result?.ok === false && /不存在/.test(denied.body?.result?.error?.message))
 }
 
+// review P1 regression: non-string sourceDir must never reach the authorizer or store
+{
+  const grantDir = mkdtempSync(join(tmpdir(), 'vlog-grant-array-'))
+  const arr = await callRoute('/api/vlog-studio/projects.create', { name: 'sec-array', sourceDir: [grantDir] })
+  check('projects.create rejects array sourceDir (bypass closed)', arr.body?.result?.ok === false && /字符串/.test(arr.body?.result?.error?.message))
+  const num = await callRoute('/api/vlog-studio/projects.create', { name: 'sec-num', sourceDir: 42 })
+  check('projects.create rejects number sourceDir', num.body?.result?.ok === false)
+  const obj = await callRoute('/api/vlog-studio/projects.grant-source', { project: 'sec-poc', path: { path: grantDir } })
+  check('grant-source rejects object path', obj.body?.result?.ok === false)
+  const { createProjectStore } = await import('../host/projects.js')
+  let threw = false
+  try { await createProjectStore(workspace).create({ name: 'sec-store', sourceDir: [grantDir] }) } catch { threw = true }
+  check('project store rejects non-string sourceDir defensively', threw)
+  rmSync(grantDir, { recursive: true, force: true })
+}
+
 // ---- client bundle: execute the lazy factory with a stub React ----
 {
   const registered = []
@@ -183,6 +199,209 @@ check('pick-folder route registered', routes.has('/api/vlog-studio/pick-folder')
     check('chain: inventory → timeline → frames', adv({ op: 'inventory' }, 'succeeded').action === 'start' && adv({ op: 'inventory' }, 'succeeded').op === 'timeline' && adv({ op: 'timeline' }, 'succeeded').op === 'frames')
     check('chain: frames success finishes the chain', adv({ op: 'frames' }, 'succeeded').action === 'done')
     check('chain: unknown op fails instead of restarting', adv({ op: 'nope' }, 'succeeded').action === 'fail')
+  }
+
+  // ---- review-fix behavior tests: stateful mini-React at handler level ----
+  const keyHandlers = {}
+  globalThis.window.addEventListener = (n, f) => { keyHandlers[n] = f }
+  globalThis.window.removeEventListener = () => {}
+
+  function miniMount() {
+    const cells = []
+    const cleanups = []
+    let cursor = 0
+    const flatten = (cs) => cs.flat(Infinity).filter((c) => c !== null && c !== undefined && c !== false && c !== true)
+    const react = {
+      createElement: (type, props, ...children) => {
+        const ch = flatten(children)
+        if (typeof type === 'function') return type({ ...(props || {}), children: ch.length === 1 ? ch[0] : (ch.length ? ch : undefined) })
+        const el = { type, props: props || {}, children: ch }
+        if (props && props.ref) props.ref.current = el
+        return el
+      },
+      useState: (initial) => {
+        const at = cursor
+        cursor += 1
+        if (cells.length <= at) cells[at] = typeof initial === 'function' ? initial() : initial
+        return [cells[at], (update) => { cells[at] = typeof update === 'function' ? update(cells[at]) : update }]
+      },
+      useEffect: (fn) => { cleanups.push(fn()) },
+      useRef: (v) => ({ current: v }),
+      useCallback: (fn) => fn,
+    }
+    return { react, cells, cleanups, render: (comp, props) => { cursor = 0; return comp(props) } }
+  }
+
+  const isEl = (x) => x && typeof x === 'object' && 'type' in x
+  const findAll = (el, pred, out = []) => {
+    if (!isEl(el)) return out
+    if (pred(el)) out.push(el)
+    for (const c of el.children) findAll(c, pred, out)
+    return out
+  }
+  const mountPage = (seed) => {
+    const mount = miniMount()
+    const face2 = loaded.factory(() => mount.react)
+    const reg = []
+    face2.apply({
+      effect: (fn) => fn(),
+      locale: { register: () => () => {}, bind: () => (k) => k },
+      slots: { inject: (slot, cb) => reg.push({ slot, r: cb() }), register: (o, c) => ({ options: o, component: c }) },
+      connection: { rpc: { call: async () => ({ ok: true, value: {} }) } },
+      uiWorkspace: { openSession: () => {} },
+    })
+    const page = reg.find((e) => e.slot === 'main').r.component
+    for (const value of seed) mount.cells.push(value)
+    return { mount, page }
+  }
+  const t2 = (k) => k
+  const baseProps = (api) => ({ t: t2, api, openSession: () => {}, clipboard: async () => {} })
+
+  // create dialog: paste segment must win over a folder picked earlier
+  {
+    const calls = []
+    const api = async (op, payload) => {
+      calls.push({ op, payload })
+      return { ok: true, value: { project: { name: 'P' }, projects: [], task: { id: 't' } } }
+    }
+    // cells: view, projects, creating, ideaMode, name, sourceDir, pickedDir, sourceMode, error, showEnv
+    const { mount, page } = mountPage([{ name: 'home' }, [], true, false, 'P', '', '/media/picked-A', 'paste', '', false])
+    let tree = mount.render(page, baseProps(api))
+    const pasteInput = findAll(tree, (el) => el.type === 'input' && el.props.placeholder === 'sourceDirPlaceholder')[0]
+    pasteInput.props.onChange({ target: { value: '/media/pasted-B' } })
+    tree = mount.render(page, baseProps(api))
+    const createBtn = findAll(tree, (el) => el.type === 'button' && el.children.includes('create') && el.props.onClick)[0]
+    await createBtn.props.onClick()
+    check('create honors paste mode over earlier pick', calls.find((c) => c.op === 'projects.create')?.payload?.sourceDir === '/media/pasted-B')
+  }
+
+  // drag-and-drop: folders grant themselves, files grant the parent, fresh grants start the chain
+  {
+    const proj = { name: 'P', dir: '/w/P', sourceDirs: [], createdAt: '', updatedAt: '' }
+    const dropCase = async (files, entries) => {
+      const calls = []
+      const api = async (op, payload) => {
+        calls.push({ op, payload })
+        if (op === 'projects.list') return { ok: true, value: { projects: [proj] } }
+        if (op === 'projects.grant-source') return { ok: true, value: { project: proj } }
+        if (op === 'tasks.start') return { ok: true, value: { task: { id: 't1' } } }
+        return { ok: true, value: {} }
+      }
+      // cells: view, project, grantPath, error, notice, framesKey, tab, aiOpen, aiDraft, focus, picked, picking, showPaste, framesCount, chain, sessionNotice
+      const { mount, page } = mountPage([{ name: 'project', project: 'P' }, proj, '', '', '', 0, 'materials', true, '', false, null, false, false, null, null, ''])
+      const tree = mount.render(page, baseProps(api))
+      const card = findAll(tree, (el) => typeof el.props.onDrop === 'function')[0]
+      await card.props.onDrop({
+        preventDefault() {},
+        dataTransfer: {
+          files,
+          items: entries ? entries.map((isDir) => ({ webkitGetAsEntry: () => ({ isDirectory: isDir }) })) : undefined,
+        },
+      })
+      return calls
+    }
+    const folder = await dropCase([{ path: '/media/trip' }], [true])
+    check('dropped folder grants itself', folder.find((c) => c.op === 'projects.grant-source')?.payload?.path === '/media/trip')
+    check('fresh drop grant starts prepare chain', folder.some((c) => c.op === 'tasks.start' && c.payload?.op === 'inventory'))
+    const file = await dropCase([{ path: '/media/clip.mp4' }], [false])
+    check('dropped file grants containing dir', file.find((c) => c.op === 'projects.grant-source')?.payload?.path === '/media')
+    const unknown = await dropCase([{ path: '/media/trip' }], null)
+    check('unknown entry kind grants raw path (host validates)', unknown.find((c) => c.op === 'projects.grant-source')?.payload?.path === '/media/trip')
+  }
+
+  // focus trap: disabled Create must not be a trap edge (Tab from Cancel wraps to first)
+  {
+    const { mount, page } = mountPage([{ name: 'home' }, [], true, false, '', '', '', 'pick', '', false])
+    const tree = page(baseProps(async () => ({ ok: true, value: { projects: [] } })))
+    const onKey = keyHandlers.keydown
+    const dialog = findAll(tree, (el) => el.props.role === 'dialog')[0]
+    const focused = []
+    const first = { focus: () => focused.push('first') }
+    const cancel = { focus: () => focused.push('cancel') }
+    const disabledCreate = { disabled: true, focus: () => focused.push('create') }
+    dialog.querySelectorAll = () => [first, cancel, disabledCreate]
+    dialog.ownerDocument = { activeElement: cancel }
+    dialog.contains = (n) => [first, cancel, disabledCreate].includes(n)
+    let prevented = false
+    onKey({ key: 'Tab', shiftKey: false, preventDefault: () => { prevented = true } })
+    check('focus trap skips disabled controls (Tab wraps)', prevented === true && focused.includes('first'))
+  }
+
+  // roving tabindex: arrow key moves selection AND focus together
+  {
+    const focusedIds = []
+    globalThis.document = {
+      getElementById: (id) => (id.startsWith('vsw-tab-') ? { focus: () => focusedIds.push(id) } : null),
+      createElement: () => ({}),
+      head: { appendChild() {} },
+    }
+    try {
+      const proj = { name: 'P', dir: '/w/P', sourceDirs: ['/media'], createdAt: '', updatedAt: '' }
+      const { mount, page } = mountPage([{ name: 'project', project: 'P' }, proj, '', '', '', 0, 'materials', true, '', false, null, false, false, null, null, ''])
+      const tree = page(baseProps(async () => ({ ok: true, value: { projects: [proj] } })))
+      const nav = findAll(tree, (el) => el.props.role === 'tablist')[0]
+      nav.props.onKeyDown({ key: 'ArrowRight', preventDefault() {} })
+      check('arrow key moves tab selection', mount.cells[6] === 'cut')
+      check('arrow key moves focus to the new tab', focusedIds.includes('vsw-tab-cut'))
+    } finally { delete globalThis.document }
+  }
+
+  // AI draft survives a failed session handoff; cleared only on success
+  {
+    const proj = { name: 'P', dir: '/w/P', sourceDirs: [], createdAt: '', updatedAt: '' }
+    const run = async (sessionOk) => {
+      const api = async (op) => {
+        if (op === 'projects.list') return { ok: true, value: { projects: [proj] } }
+        if (op === 'session') return sessionOk
+          ? { ok: true, value: { sessionId: 's1', projectDir: proj.dir, reused: false } }
+          : { ok: false, error: { message: 'session down' } }
+        return { ok: true, value: {} }
+      }
+      const { mount, page } = mountPage([{ name: 'project', project: 'P' }, proj, '', '', '', 0, 'materials', true, 'keep this draft', false, null, false, false, null, null, ''])
+      const tree = mount.render(page, baseProps(api))
+      const send = findAll(tree, (el) => el.type === 'button' && String(el.props.className).includes('vsw-ai-send'))[0]
+      await send.props.onClick()
+      return { draft: mount.cells[8], error: mount.cells[3] }
+    }
+    const failed = await run(false)
+    check('failed session handoff preserves the draft', failed.draft === 'keep this draft' && failed.error === 'session down')
+    const okRun = await run(true)
+    check('successful handoff clears the draft', okRun.draft === '' && okRun.error === '')
+  }
+
+  // prepare-chain race: busy guard blocks double starts; stale responses cannot wipe state
+  {
+    const proj = { name: 'P', dir: '/w/P', sourceDirs: ['/media'], createdAt: '', updatedAt: '' }
+    const calls = []
+    let releaseStart
+    const startGate = new Promise((resolvePromise) => { releaseStart = resolvePromise })
+    const api = async (op) => {
+      calls.push({ op })
+      if (op === 'tasks.status') return { ok: true, value: { task: { state: 'succeeded' } } }
+      if (op === 'tasks.start') return startGate
+      if (op === 'projects.list') return { ok: true, value: { projects: [proj] } }
+      return { ok: true, value: {} }
+    }
+    const realSetInterval = globalThis.setInterval
+    const realClearInterval = globalThis.clearInterval
+    let tick = null
+    globalThis.setInterval = (fn) => { tick = fn; return 1 }
+    globalThis.clearInterval = () => {}
+    try {
+      const { mount, page } = mountPage([{ name: 'project', project: 'P' }, proj, '', '', '', 0, 'materials', true, '', false, null, false, false, null, { op: 'inventory', taskId: 't1' }, ''])
+      mount.render(page, baseProps(api))
+      const first = tick()
+      await Promise.resolve(); await Promise.resolve()
+      await tick() // busy → returns without a second start
+      check('busy guard prevents double task start', calls.filter((c) => c.op === 'tasks.start').length === 1)
+      mount.cleanups.splice(0).forEach((c) => { if (typeof c === 'function') c() })
+      releaseStart({ ok: false, error: { message: 'write busy' } })
+      await first
+      check('stale start failure cannot clear the chain', mount.cells[14]?.op === 'inventory' && mount.cells[3] === '')
+    } finally {
+      globalThis.setInterval = realSetInterval
+      globalThis.clearInterval = realClearInterval
+    }
   }
 }
 

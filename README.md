@@ -80,7 +80,7 @@ dsh plugin --profile desktop remove dsh-vlog-jianying
 
 ```sh
 python3 skills/vlog-jianying-one-stop/tests/smoke_test.py   # 技能脚本(17 项)
-node test/host-smoke.mjs                                    # 工作台宿主+客户端(15 项)
+node test/host-smoke.mjs                                    # 工作台宿主+客户端(59 项)
 ```
 
 纯标准库测试(参数校验、覆盖保护、降级路径)始终执行;装了 ffmpeg 时自动追加端到端用例(合成素材 → 盘点 → 时间线 → 抽帧 → 混音 → 校验)。

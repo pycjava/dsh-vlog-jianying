@@ -224,11 +224,16 @@ export function apply(ctx) {
     }),
 
     '/api/vlog-studio/projects.create': async (payload) => {
-      if (typeof payload?.sourceDir === 'string' && payload.sourceDir) {
-        const verdict = await grants.authorize(payload.sourceDir)
+      const sourceDir = payload?.sourceDir;
+      if (sourceDir !== undefined && sourceDir !== null && sourceDir !== '') {
+        // Review P1: only a string may ever reach the authorizer/store —
+        // projects.js used to String()-coerce arrays into grantable paths,
+        // silently bypassing the grant confirmation gate.
+        if (typeof sourceDir !== 'string') return badRequest('素材目录必须是字符串路径');
+        const verdict = await grants.authorize(sourceDir)
         if (!verdict.ok) return verdict
       }
-      const project = await projectStore.create({ name: payload?.name, sourceDir: payload?.sourceDir })
+      const project = await projectStore.create({ name: payload?.name, sourceDir })
       return { ok: true, value: { project } }
     },
 
