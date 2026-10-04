@@ -1,6 +1,6 @@
 {
   "name": "dsh-vlog-jianying",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "description": "vlog-jianying-one-stop 技能的 DSH 插件版:macOS / Windows + 剪映专业版的 Vlog 一站式自动剪辑工作流,含「视频剪辑」项目式制作工作台(首页 + 策划/素材/粗剪/交付四工作区 + AI 会话侧栏 + 原生文件夹选择/拖拽授权素材目录)。上游 pin 6a0eb52a,本地含 macOS 适配补丁(Python 3 脚本)。",
   "type": "module",
   "main": "host/index.js",
