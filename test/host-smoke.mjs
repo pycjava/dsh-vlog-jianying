@@ -201,6 +201,16 @@ check('pick-folder route registered', routes.has('/api/vlog-studio/pick-folder')
     check('chain: unknown op fails instead of restarting', adv({ op: 'nope' }, 'succeeded').action === 'fail')
   }
 
+  // parseCsv: utf-8-sig BOM must not pollute the first header key (live bug: frame captions showed "undefined")
+  {
+    const pc = face.parseCsv
+    check('client exports parseCsv', typeof pc === 'function')
+    if (typeof pc === 'function') {
+      const rows = pc('\uFEFFMediaId,FrameZone,Status\r\nclip1.mp4,start,ok\r\n')
+      check('parseCsv strips BOM from first header key', rows[0]?.MediaId === 'clip1.mp4' && rows[0]?.FrameZone === 'start' && rows[0]?.Status === 'ok')
+    }
+  }
+
   // ---- review-fix behavior tests: stateful mini-React at handler level ----
   const keyHandlers = {}
   globalThis.window.addEventListener = (n, f) => { keyHandlers[n] = f }
