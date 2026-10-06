@@ -188,6 +188,10 @@ check('pick-folder route registered', routes.has('/api/vlog-studio/pick-folder')
   const navEntry = registered.find((r) => r.slot === 'sidebar.panellist')
   check('registers main page keyed vlog-studio', mainEntry?.registration?.options?.key === 'vlog-studio')
   check('registers sidebar entry panel label order 20', navEntry?.registration?.options?.order === 20 && navEntry?.registration?.options?.id === 'vlog-studio' && navEntry?.registration?.options?.label() === 'panel')
+  const convEntry = registered.find((r) => r.slot === 'vsw.session.conversation')
+  check('declares session-scope child slot for embedded conversation', mainEntry?.registration?.options?.children?.['vsw.session.conversation']?.scope === 'session')
+  check('registers embedded conversation component', typeof convEntry?.registration?.component === 'function')
+  check('client inject includes sessions service', face.inject.includes('sessions'))
   check('page component renders without throwing', typeof mainEntry?.registration?.component === 'function' && Boolean(mainEntry.registration.component({ t: (k) => k, api: async () => ({ ok: true, value: { projects: [] } }), openSession: () => {}, clipboard: async () => {} })))
 
   // advanceChain: pure prepare-chain state machine
@@ -412,6 +416,44 @@ check('pick-folder route registered', routes.has('/api/vlog-studio/pick-folder')
       globalThis.setInterval = realSetInterval
       globalThis.clearInterval = realClearInterval
     }
+  }
+
+  // embedded chat: session ensured → retained → mounted via SessionProvider + renderSlot
+  {
+    const proj = { name: 'P', dir: '/w/P', sourceDirs: ['/media'], createdAt: '', updatedAt: '' }
+    const retained = []
+    const released = []
+    const renderSlotCalls = []
+    const mockSessions = {
+      retain: (id, opts) => { retained.push({ id, opts }); return { release: () => released.push(id) } },
+    }
+    const StubProvider = ({ children }) => children
+    const stubRenderSlot = (key, opts) => ({ type: 'vsw-slot-outlet', props: { slot: key }, children: [] })
+    const api = async (op) => {
+      if (op === 'projects.list') return { ok: true, value: { projects: [proj] } }
+      if (op === 'session') return { ok: true, value: { sessionId: 's1', projectDir: proj.dir, reused: false } }
+      return { ok: true, value: {} }
+    }
+    const { mount, page } = mountPage([{ name: 'project', project: 'P' }, proj, '', '', '', 0, 'materials', true, '', false, null, false, false, null, null, ''])
+    const embedProps = { ...baseProps(api), sessions: mockSessions, SessionProvider: StubProvider, renderSlot: stubRenderSlot }
+    mount.render(page, embedProps)
+    await Promise.resolve(); await Promise.resolve() // session RPC lands → setSessionInfo
+    mount.render(page, embedProps)                   // retain effect runs → setSessionRef
+    const tree = mount.render(page, embedProps)      // panel embeds
+    check('embedded mode retains the project session', retained.length >= 1 && retained.every((r) => r.id === 's1' && r.opts?.source === 'vlog-studio'))
+    check('embedded mode mounts the conversation child slot', findAll(tree, (el) => el.type === 'vsw-slot-outlet' && el.props.slot === 'vsw.session.conversation').length === 1)
+    check('embedded mode drops the fallback send box', findAll(tree, (el) => el.type === 'button' && String(el.props.className).includes('vsw-ai-send')).length === 0)
+    mount.cleanups.splice(0).forEach((c) => { if (typeof c === 'function') c() })
+    check('unmount releases the retained session', released.includes('s1'))
+  }
+
+  // fallback: without the sessions service the panel keeps the copy+jump box
+  {
+    const proj = { name: 'P', dir: '/w/P', sourceDirs: [], createdAt: '', updatedAt: '' }
+    const api = async (op) => (op === 'projects.list' ? { ok: true, value: { projects: [proj] } } : { ok: true, value: {} })
+    const { mount, page } = mountPage([{ name: 'project', project: 'P' }, proj, '', '', '', 0, 'materials', true, '', false, null, false, false, null, null, ''])
+    const tree = mount.render(page, baseProps(api)) // no sessions/SessionProvider/renderSlot props
+    check('fallback panel keeps the send box without sessions service', findAll(tree, (el) => el.type === 'button' && String(el.props.className).includes('vsw-ai-send')).length === 1)
   }
 }
 
