@@ -443,6 +443,13 @@ check('pick-folder route registered', routes.has('/api/vlog-studio/pick-folder')
     check('embedded mode retains the project session', retained.length >= 1 && retained.every((r) => r.id === 's1' && r.opts?.source === 'vlog-studio'))
     check('embedded mode mounts the conversation child slot', findAll(tree, (el) => el.type === 'vsw-slot-outlet' && el.props.slot === 'vsw.session.conversation').length === 1)
     check('embedded mode drops the fallback send box', findAll(tree, (el) => el.type === 'button' && String(el.props.className).includes('vsw-ai-send')).length === 0)
+    // next-step stays in-page when embedded (never jumps to the full session view)
+    let jumps = 0
+    embedProps.openSession = () => { jumps += 1 }
+    const treeJump = mount.render(page, embedProps)
+    const nextBtn = findAll(treeJump, (el) => el.type === 'button' && (Array.isArray(el.children) ? el.children : [el.children]).includes('nextChat'))[0]
+    nextBtn.props.onClick()
+    check('next-step stays in the page when embedded', jumps === 0)
     mount.cleanups.splice(0).forEach((c) => { if (typeof c === 'function') c() })
     check('unmount releases the retained session', released.includes('s1'))
   }
