@@ -443,6 +443,7 @@ check('pick-folder route registered', routes.has('/api/vlog-studio/pick-folder')
     check('embedded mode retains the project session', retained.length >= 1 && retained.every((r) => r.id === 's1' && r.opts?.source === 'vlog-studio'))
     check('embedded mode mounts the conversation child slot', findAll(tree, (el) => el.type === 'vsw-slot-outlet' && el.props.slot === 'vsw.session.conversation').length === 1)
     check('embedded mode drops the fallback send box', findAll(tree, (el) => el.type === 'button' && String(el.props.className).includes('vsw-ai-send')).length === 0)
+    check('embedded mode shows no diag line', findAll(tree, (el) => String(el.props?.className || '').includes('vsw-ai-diag')).length === 0)
     // next-step stays in-page when embedded (never jumps to the full session view)
     let jumps = 0
     embedProps.openSession = () => { jumps += 1 }
@@ -459,8 +460,11 @@ check('pick-folder route registered', routes.has('/api/vlog-studio/pick-folder')
     const proj = { name: 'P', dir: '/w/P', sourceDirs: [], createdAt: '', updatedAt: '' }
     const api = async (op) => (op === 'projects.list' ? { ok: true, value: { projects: [proj] } } : { ok: true, value: {} })
     const { mount, page } = mountPage([{ name: 'project', project: 'P' }, proj, '', '', '', 0, 'materials', true, '', false, null, false, false, null, null, ''])
-    const tree = mount.render(page, baseProps(api)) // no sessions/SessionProvider/renderSlot props
+    mount.render(page, baseProps(api)) // no sessions/SessionProvider/renderSlot props
+    const tree = mount.render(page, baseProps(api)) // second pass: diag state applied
     check('fallback panel keeps the send box without sessions service', findAll(tree, (el) => el.type === 'button' && String(el.props.className).includes('vsw-ai-send')).length === 1)
+    const diagEl = findAll(tree, (el) => String(el.props?.className || '').includes('vsw-ai-diag'))[0]
+    check('fallback panel shows version + diag reason', Boolean(diagEl) && (Array.isArray(diagEl.children) ? diagEl.children : [diagEl.children]).some((c) => String(c).includes('no-sessions-service')))
   }
 }
 
