@@ -418,6 +418,30 @@ check('pick-folder route registered', routes.has('/api/vlog-studio/pick-folder')
     }
   }
 
+  // bound session (legacy jump flow): retain directly, never call the create RPC
+  // — create({sessionId}) fails with "already owned by an active write handle"
+  {
+    const proj = { name: 'P', dir: '/w/P', sessionId: 'session-old-1', sourceDirs: ['/media'], createdAt: '', updatedAt: '' }
+    const calls = []
+    const retained = []
+    const mockSessions = { retain: (id) => { retained.push(id); return { release() {} } } }
+    const StubProvider = ({ children }) => children
+    const stubRenderSlot = (key) => ({ type: 'vsw-slot-outlet', props: { slot: key }, children: [] })
+    const api = async (op) => {
+      calls.push(op)
+      if (op === 'projects.list') return { ok: true, value: { projects: [proj] } }
+      return { ok: true, value: {} }
+    }
+    const { mount, page } = mountPage([{ name: 'project', project: 'P' }, proj, '', '', '', 0, 'materials', true, '', false, null, false, false, null, null, ''])
+    const props = { ...baseProps(api), sessions: mockSessions, SessionProvider: StubProvider, renderSlot: stubRenderSlot }
+    mount.render(page, props) // ensure effect: sessionInfo set straight from project.sessionId (no RPC)
+    mount.render(page, props) // retain effect runs
+    const tree = mount.render(page, props) // panel embeds
+    check('bound session never calls the create RPC', !calls.includes('session'))
+    check('bound session is retained directly', retained.includes('session-old-1'))
+    check('embedded mounts for a bound session', findAll(tree, (el) => el.type === 'vsw-slot-outlet' && el.props.slot === 'vsw.session.conversation').length === 1)
+  }
+
   // embedded chat: session ensured → retained → mounted via SessionProvider + renderSlot
   {
     const proj = { name: 'P', dir: '/w/P', sourceDirs: ['/media'], createdAt: '', updatedAt: '' }
